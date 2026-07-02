@@ -1,0 +1,139 @@
+# DESeq2 → ORA / GSEA enrichment (chicken-first, pure Python)
+
+A pipeline **and** a Streamlit app that take a DESeq2 differential-expression
+table and run over-representation analysis (ORA) and pre-ranked GSEA, then plot
+the results. Built pure-Python so it deploys to **Streamlit Community Cloud**
+with no R/Bioconductor.
+
+Native chicken annotation is handled without ortholog loss for ORA; GSEA uses
+human orthologs so you get the richly curated MSigDB collections.
+
+---
+
+## What it does
+
+| Stage | Engine | Notes |
+|-------|--------|-------|
+| Load & validate | pandas | auto-detects DESeq2 columns; reports ID coverage, biotypes, NA-padj |
+| DEG selection | — | `padj < α` & `|log2FC| > τ`; up/down run separately; **universe = tested genes** |
+| **ORA** | **g:Profiler** (`ggallus`) | native chicken GO/KEGG/Reactome/WikiPathways; **custom background** |
+| Ortholog map | g:Profiler `orth` | chicken → human, for GSEA only |
+| Ranking | — | DESeq2 **Wald `stat`** (default), `sign(FC)·-log10p`, or `log2FC`; duplicates collapsed by max magnitude |
+| **GSEA** | **gseapy** prerank | MSigDB Hallmark / C2 / Reactome / WikiPathways (Enrichr-hosted) + your custom `.gmt` |
+| Plots | Plotly + matplotlib | volcano, MA, ORA dotplot, GSEA bar + running-ES, leading-edge heatmap, enrichment map, UpSet |
+
+Two design choices are enforced because they are the usual ORA pitfalls: the
+background is the **tested** gene set (non-NA `padj`), not the genome; and up-
+and down-regulated genes are analysed **separately**.
+
+---
+
+## Expected input
+
+Any DESeq2 results table (TSV/CSV). Columns are auto-detected from common
+aliases. Required (after mapping): `gene_id`, `log2FoldChange`, `pvalue`,
+`padj`. Recommended: `entrez_id`, `gene_name`, `stat`, `baseMean`,
+`gene_biotype`. If the gene ID sits in an unnamed first column it is picked up
+automatically. `padj = NA` rows (independent filtering) are dropped from the
+ORA universe as they should be.
+
+A synthetic sample (`sample_data/…Sacral_vs_Sacralized_Caudal…tsv`, 3,000
+chicken genes) ships with the app so the live demo works immediately.
+
+---
+
+## Run locally
+
+```bash
+pip install -r requirements.txt
+streamlit run app/streamlit_app.py
+```
+
+Toggle **Use bundled sample data** in the sidebar, or upload one file per
+contrast, set thresholds, and click **Run enrichment**.
+
+---
+
+## Deploy to Streamlit Community Cloud
+
+1. Push this folder to a **public GitHub repo** (see structure below).
+2. On <https://share.streamlit.io> → **New app** → pick the repo.
+3. Set **Main file path** to `app/streamlit_app.py`.
+4. Deploy. `requirements.txt` and `packages.txt` are picked up automatically.
+
+Notes:
+* Nothing licensed is committed — MSigDB/Reactome gene sets are fetched at
+  runtime from Enrichr-hosted libraries, so the public repo stays clean.
+* `packages.txt` installs `chromium` to enable optional static SVG/PDF export.
+  If it is unavailable the app silently falls back to interactive HTML, and you
+  can always use the Plotly camera icon for PNGs. Remove `packages.txt` for a
+  leaner, HTML-only deployment.
+* The box is ~1 GB RAM / 1 CPU. Keep **Quick mode** on for previews; C2
+  Canonical (~3k sets) is opt-in for that reason.
+
+---
+
+## Batch use on HPC / Tempest (the CLI)
+
+Same engine, headless, for the real multi-contrast design:
+
+```bash
+python -m deseq2_enrich.cli \
+  --input results/Sacral_vs_Caudal.tsv \
+  --name Sacral_vs_Caudal \
+  --outdir out/ \
+  --sources GO:BP KEGG REAC WP \
+  --gsea-libs MSigDB_Hallmark_2020 Reactome_2022 \
+  --rank stat --padj 0.05 --lfc 1.0 \
+  --static          # add for SVG/PDF (needs chrome/chromium + kaleido)
+```
+
+Writes `<name>_ORA.csv`, `<name>_GSEA.csv`, and figures (HTML always; SVG/PDF
+with `--static`). Loop over contrasts in a Slurm array; the g:Profiler/Enrichr
+calls are memoised within a process.
+
+---
+
+## Custom gene-set modules
+
+Upload a `.gmt` in the sidebar (or `--custom-gmt`) to score your curated
+modules (cGAS-STING, necroptosis, apoptosis, inflammasome, osteoclast,
+osteoblast) through the identical GSEA path. Format:
+`module_name<TAB>description<TAB>GENE1<TAB>GENE2…`. Genes must match the ranking
+namespace (human symbols after ortholog mapping, or set the ranking to a column
+that matches your GMT).
+
+---
+
+## Adapting to another organism
+
+Change `ORGANISM` (and, if needed, `ORTHOLOG_TARGET`) in
+`deseq2_enrich/config.py` to any g:Profiler code (`hsapiens`, `mmusculus`, …).
+For a species already covered by MSigDB you can skip the ortholog step by
+ranking on symbols directly.
+
+---
+
+## Project structure
+
+```
+deseq2_enrich/
+├── app/streamlit_app.py        # the app (Main file path on Cloud)
+├── deseq2_enrich/              # the pipeline package
+│   ├── config.py  io.py  degs.py  rank.py
+│   ├── ortho.py   ora.py  genesets.py  gsea.py
+│   ├── plots.py   pipeline.py  cli.py
+├── sample_data/                # bundled demo table
+├── requirements.txt  packages.txt  .streamlit/config.toml
+└── README.md
+```
+
+## Caveats
+
+* ORA and the MSigDB library fetch require internet (both keyless services).
+* Non-protein-coding genes (lncRNA) are largely unannotated in GO/KEGG and drop
+  out of enrichment; the coverage report tells you how many.
+* GSEA significance is permutation-based — use the full 1000 permutations for
+  anything you report, not Quick mode.
+* g:Profiler `g:SCS` is the multiple-testing correction for ORA; GSEA uses
+  gseapy's FDR q-value. Don't compare the two thresholds directly.
