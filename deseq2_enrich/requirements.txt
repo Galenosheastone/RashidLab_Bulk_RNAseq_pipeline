@@ -4,8 +4,8 @@ pandas>=2.1,<2.3
 numpy>=1.26,<2.2
 
 # Enrichment engines
-gseapy>=1.1,<2
-gprofiler-official>=1.0
+gseapy>=1.1,<2            # pre-ranked GSEA (Rust backend, ships manylinux wheels)
+gprofiler-official>=1.0   # native-chicken ORA + chicken->human orthologs
 
 # Plotting
 plotly>=5.22,<7

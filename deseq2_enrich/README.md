@@ -46,7 +46,7 @@ chicken genes) ships with the app so the live demo works immediately.
 
 ```bash
 pip install -r requirements.txt
-streamlit run streamlit_app.py
+streamlit run app/streamlit_app.py
 ```
 
 Toggle **Use bundled sample data** in the sidebar, or upload one file per
@@ -58,7 +58,7 @@ contrast, set thresholds, and click **Run enrichment**.
 
 1. Push this folder to a **public GitHub repo** (see structure below).
 2. On <https://share.streamlit.io> → **New app** → pick the repo.
-3. Set **Main file path** to `streamlit_app.py`.
+3. Set **Main file path** to `app/streamlit_app.py`.
 4. In **Advanced settings**, choose Python **3.12**.
 5. Deploy. `requirements.txt` is picked up automatically.
 
@@ -72,8 +72,6 @@ Notes:
   Canonical (~3k sets) is opt-in for that reason.
 * If the logs show Python 3.14, switch the app's Python version back to 3.12.
   The scientific stack installs much more predictably on 3.12.
-* If you deploy only the packaged `deseq2_enrich/` directory as the repo root,
-  use **Main file path** `app/streamlit_app.py` instead.
 
 ---
 
@@ -121,19 +119,15 @@ ranking on symbols directly.
 ## Project structure
 
 ```
-.
-├── streamlit_app.py            # app entrypoint for this repo layout
-├── requirements.txt
-├── .streamlit/config.toml
-└── deseq2_enrich/
-    ├── app/streamlit_app.py    # app entrypoint if this folder is repo root
-    ├── deseq2_enrich/          # the pipeline package
-    │   ├── config.py  io.py  degs.py  rank.py
-    │   ├── ortho.py   ora.py  genesets.py  gsea.py
-    │   ├── plots.py   pipeline.py  cli.py
-    ├── sample_data/            # bundled demo table
-    ├── requirements.txt  .streamlit/config.toml
-    └── README.md
+deseq2_enrich/
+├── app/streamlit_app.py        # the app (Main file path on Cloud)
+├── deseq2_enrich/              # the pipeline package
+│   ├── config.py  io.py  degs.py  rank.py
+│   ├── ortho.py   ora.py  genesets.py  gsea.py
+│   ├── plots.py   pipeline.py  cli.py
+├── sample_data/                # bundled demo table
+├── requirements.txt  .streamlit/config.toml
+└── README.md
 ```
 
 ## Caveats
