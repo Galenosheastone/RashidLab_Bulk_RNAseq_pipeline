@@ -208,6 +208,22 @@ def _ora_label(row: pd.Series) -> str:
     return f"{term} ({source}, {direction})"
 
 
+def _plotly(fig, key: str):
+    try:
+        st.plotly_chart(fig, width="stretch", key=key)
+    except TypeError:
+        st.plotly_chart(fig, use_container_width=True, key=key)
+
+
+def _dataframe(df: pd.DataFrame, *, key: str | None = None,
+               height: int | None = None):
+    kwargs = {"key": key} if key else {}
+    try:
+        st.dataframe(df, width="stretch", height=height, **kwargs)
+    except TypeError:
+        st.dataframe(df, use_container_width=True, height=height, **kwargs)
+
+
 # --------------------------------------------------------------------------
 # Tabs
 # --------------------------------------------------------------------------
@@ -223,11 +239,11 @@ def tab_qc(res: ContrastResult, p: dict):
         st.text(res.report.as_text())
     left, right = st.columns(2)
     with left:
-        st.plotly_chart(plots.de_count_bar(res.df, p["padj"], p["lfc"]),
-                        use_container_width=True)
+        _plotly(plots.de_count_bar(res.df, p["padj"], p["lfc"]),
+                key=f"qc_de_count_{res.name}")
     with right:
-        st.plotly_chart(plots.ma_plot(res.df, p["padj"], p["lfc"]),
-                        use_container_width=True)
+        _plotly(plots.ma_plot(res.df, p["padj"], p["lfc"]),
+                key=f"qc_ma_{res.name}")
 
 
 def tab_genes(res: ContrastResult, p: dict):
@@ -296,7 +312,7 @@ def tab_genes(res: ContrastResult, p: dict):
             "log2FoldChange", "stat", "pvalue", "padj", "neg_log10_padj",
         ] if c in filtered.columns
     ]
-    st.dataframe(filtered[show_cols], use_container_width=True, height=360)
+    _dataframe(filtered[show_cols], key=f"gene_table_{res.name}", height=360)
     st.download_button(
         "⬇ Filtered genes (CSV)",
         filtered[show_cols].to_csv(index=False),
@@ -321,7 +337,8 @@ def tab_genes(res: ContrastResult, p: dict):
     else:
         m4.metric("baseMean", "NA")
     with st.expander("Full selected-gene row", expanded=False):
-        st.dataframe(row.to_frame("value"), use_container_width=True)
+        detail = row.astype(str).to_frame("value")
+        _dataframe(detail, key=f"gene_detail_row_{res.name}")
     if st.button("Highlight this gene in volcano", key=f"gene_highlight_{res.name}"):
         st.session_state[f"highlight_genes_{res.name}"] = [_gene_label(row).split(" / ")[0]]
 
@@ -359,33 +376,34 @@ def tab_de_plots(res: ContrastResult, p: dict):
 
     left, right = st.columns([1.4, 1])
     with left:
-        st.plotly_chart(
+        _plotly(
             plots.volcano(
                 res.df, p["padj"], p["lfc"], label_top_n=label_top_n,
                 label_col=label_col, highlight_genes=highlight_genes,
             ),
-            use_container_width=True,
+            key=f"de_volcano_{res.name}",
         )
     with right:
-        st.plotly_chart(plots.de_count_bar(res.df, p["padj"], p["lfc"]),
-                        use_container_width=True)
-        st.plotly_chart(plots.ma_plot(res.df, p["padj"], p["lfc"]),
-                        use_container_width=True)
+        _plotly(plots.de_count_bar(res.df, p["padj"], p["lfc"]),
+                key=f"de_count_{res.name}")
+        _plotly(plots.ma_plot(res.df, p["padj"], p["lfc"]),
+                key=f"de_ma_{res.name}")
 
     d1, d2 = st.columns(2)
     with d1:
-        st.plotly_chart(plots.de_histogram(res.df, "log2FoldChange", p["padj"], p["lfc"]),
-                        use_container_width=True)
-        st.plotly_chart(plots.de_histogram(res.df, "padj", p["padj"], p["lfc"]),
-                        use_container_width=True)
+        _plotly(plots.de_histogram(res.df, "log2FoldChange", p["padj"], p["lfc"]),
+                key=f"de_hist_lfc_{res.name}")
+        _plotly(plots.de_histogram(res.df, "padj", p["padj"], p["lfc"]),
+                key=f"de_hist_padj_{res.name}")
     with d2:
         if "baseMean" in res.df.columns:
-            st.plotly_chart(plots.de_histogram(res.df, "baseMean", p["padj"], p["lfc"]),
-                            use_container_width=True)
-        st.plotly_chart(plots.pvalue_adjustment_scatter(res.df),
-                        use_container_width=True)
+            _plotly(plots.de_histogram(res.df, "baseMean", p["padj"], p["lfc"]),
+                    key=f"de_hist_basemean_{res.name}")
+        _plotly(plots.pvalue_adjustment_scatter(res.df),
+                key=f"de_pvalue_scatter_{res.name}")
 
-    st.plotly_chart(plots.threshold_sensitivity(res.df), use_container_width=True)
+    _plotly(plots.threshold_sensitivity(res.df),
+            key=f"de_threshold_sensitivity_{res.name}")
 
 
 def tab_ora(res: ContrastResult):
@@ -439,22 +457,22 @@ def tab_ora(res: ContrastResult):
         ["Dotplot", "Bar", "Source Bubble", "Gene Heatmap", "Gene Network", "Table"]
     )
     with v_dot:
-        st.plotly_chart(plots.ora_dotplot(ora, top_n, xmetric),
-                        use_container_width=True)
+        _plotly(plots.ora_dotplot(ora, top_n, xmetric),
+                key=f"ora_dot_{res.name}")
     with v_bar:
-        st.plotly_chart(plots.ora_barplot(ora, top_n),
-                        use_container_width=True)
+        _plotly(plots.ora_barplot(ora, top_n),
+                key=f"ora_bar_{res.name}")
     with v_bubble:
-        st.plotly_chart(plots.ora_source_bubble(ora, top_n),
-                        use_container_width=True)
+        _plotly(plots.ora_source_bubble(ora, top_n),
+                key=f"ora_bubble_{res.name}")
     with v_heat:
-        st.plotly_chart(plots.ora_gene_heatmap(ora, min(top_n, 25)),
-                        use_container_width=True)
+        _plotly(plots.ora_gene_heatmap(ora, min(top_n, 25)),
+                key=f"ora_heatmap_{res.name}")
     with v_net:
-        st.plotly_chart(plots.ora_gene_network(ora, min(top_n, 18)),
-                        use_container_width=True)
+        _plotly(plots.ora_gene_network(ora, min(top_n, 18)),
+                key=f"ora_network_{res.name}")
     with v_table:
-        st.dataframe(ora, use_container_width=True, height=320)
+        _dataframe(ora, key=f"ora_table_{res.name}", height=320)
 
     term_options = ora.sort_values("p_value").index.tolist() if "p_value" in ora.columns else ora.index.tolist()
     selected_term = st.selectbox(
@@ -469,7 +487,8 @@ def tab_ora(res: ContrastResult):
     t4.metric("Genes", str(term_row.get("intersection_size", "NA")))
     genes = _parse_ora_genes(term_row.get("genes", []))
     if genes:
-        st.dataframe(pd.DataFrame({"genes": genes}), use_container_width=True, height=180)
+        _dataframe(pd.DataFrame({"genes": genes}),
+                   key=f"ora_term_genes_{res.name}", height=180)
         st.download_button(
             "⬇ Term genes (CSV)",
             pd.DataFrame({"genes": genes}).to_csv(index=False),
@@ -490,20 +509,20 @@ def tab_gsea(res: ContrastResult):
         return
     table = res.gsea.table
     top_n = st.slider("Top terms by |NES|", 5, 40, 20, key=f"gsea_n_{res.name}")
-    st.plotly_chart(plots.gsea_bar(table, top_n), use_container_width=True)
+    _plotly(plots.gsea_bar(table, top_n), key=f"gsea_bar_{res.name}")
 
     st.markdown("**Running-enrichment plot**")
     term = st.selectbox("Term", table["term"].tolist(), key=f"gsea_term_{res.name}")
-    st.plotly_chart(plots.gsea_running_plot(res.gsea, term),
-                    use_container_width=True)
+    _plotly(plots.gsea_running_plot(res.gsea, term),
+            key=f"gsea_running_{res.name}")
 
     st.markdown("**Leading-edge genes**")
     default_terms = table.head(5)["term"].tolist()
     sel = st.multiselect("Terms for heatmap", table["term"].tolist(),
                          default=default_terms, key=f"gsea_le_{res.name}")
     if sel:
-        st.plotly_chart(plots.leading_edge_heatmap(res.gsea, sel),
-                        use_container_width=True)
+        _plotly(plots.leading_edge_heatmap(res.gsea, sel),
+                key=f"gsea_leading_edge_{res.name}")
 
     st.markdown("**Enrichment map**")
     jac = st.slider("Jaccard edge threshold", 0.05, 0.6, 0.25, 0.05,
@@ -511,10 +530,10 @@ def tab_gsea(res: ContrastResult):
     net_terms = table.head(40)["term"].tolist()
     term_map = {t: res.gsea.raw.results[t]["lead_genes"].split(";") for t in net_terms}
     scores = dict(zip(table["term"], table["NES"]))
-    st.plotly_chart(plots.enrichment_network(term_map, scores, jac),
-                    use_container_width=True)
+    _plotly(plots.enrichment_network(term_map, scores, jac),
+            key=f"gsea_network_{res.name}")
 
-    st.dataframe(table, use_container_width=True, height=320)
+    _dataframe(table, key=f"gsea_table_{res.name}", height=320)
     st.download_button("⬇ GSEA table (CSV)", table.to_csv(index=False),
                        file_name=f"{res.name}_GSEA.csv", mime="text/csv")
 
