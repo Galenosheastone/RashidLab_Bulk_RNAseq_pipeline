@@ -102,6 +102,88 @@ def ma_plot(df: pd.DataFrame,
 # --------------------------------------------------------------------------
 # ORA plots
 # --------------------------------------------------------------------------
+def _flatten_column_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with simple string column names."""
+    d = df.copy()
+    if isinstance(d.columns, pd.MultiIndex):
+        flat = []
+        for col in d.columns:
+            parts = [str(part) for part in col
+                     if pd.notna(part) and str(part) not in ("", "nan")]
+            flat.append(parts[0] if parts else "")
+        d.columns = flat
+    else:
+        d.columns = [str(col) for col in d.columns]
+    return d
+
+
+def _first_column(df: pd.DataFrame, candidates: list[str],
+                  default=None) -> pd.Series | None:
+    for col in candidates:
+        if col not in df.columns:
+            continue
+        try:
+            value = df.loc[:, col]
+        except KeyError:
+            continue
+        if isinstance(value, pd.DataFrame):
+            if value.shape[1] == 0:
+                continue
+            value = value.iloc[:, 0]
+        return value
+    if default is None:
+        return None
+    return pd.Series(default, index=df.index)
+
+
+def _normalise_ora_plot_df(ora_df: pd.DataFrame,
+                           x: str) -> tuple[pd.DataFrame | None, str | None]:
+    d = _flatten_column_index(ora_df)
+    term_name = _first_column(d, ["term_name", "name", "term_id", "native"])
+    if term_name is None:
+        return None, "ORA terms are missing labels; rerun ORA"
+
+    out = d.copy()
+    out["term_name"] = term_name.astype(str)
+    out["source"] = _first_column(out, ["source"], "ORA").fillna("ORA").astype(str)
+    out["direction"] = (
+        _first_column(out, ["direction"], "all").fillna("all").astype(str)
+    )
+
+    p_value = _first_column(out, ["p_value"])
+    if "neg_log10_p" not in out.columns and p_value is not None:
+        p = pd.to_numeric(p_value, errors="coerce")
+        out["neg_log10_p"] = -np.log10(p.clip(lower=config.PVALUE_FLOOR))
+    if "gene_ratio" not in out.columns:
+        inter = _first_column(out, ["intersection_size"])
+        query = _first_column(out, ["query_size"])
+        if inter is not None and query is not None:
+            out["gene_ratio"] = (
+                pd.to_numeric(inter, errors="coerce")
+                / pd.to_numeric(query, errors="coerce").replace(0, np.nan)
+            )
+    if "recall" not in out.columns:
+        inter = _first_column(out, ["intersection_size"])
+        term_size = _first_column(out, ["term_size"])
+        if inter is not None and term_size is not None:
+            out["recall"] = (
+                pd.to_numeric(inter, errors="coerce")
+                / pd.to_numeric(term_size, errors="coerce").replace(0, np.nan)
+            )
+
+    required = [x, "p_value", "neg_log10_p", "intersection_size", "term_size"]
+    missing = [col for col in required if col not in out.columns]
+    if missing:
+        return None, "ORA table is missing: " + ", ".join(missing)
+
+    for col in required:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out.dropna(subset=[x, "p_value", "neg_log10_p", "intersection_size"])
+    if out.empty:
+        return None, "No plottable ORA terms"
+    return out, None
+
+
 def ora_dotplot(ora_df: pd.DataFrame, top_n: int = 15,
                 x: str = "gene_ratio") -> go.Figure:
     """Dotplot of top ORA terms per direction.
@@ -111,24 +193,10 @@ def ora_dotplot(ora_df: pd.DataFrame, top_n: int = 15,
     """
     if ora_df is None or ora_df.empty:
         return _empty_fig("No ORA terms")
-    ora_df = ora_df.copy()
-    if "term_name" not in ora_df.columns:
-        if "name" in ora_df.columns:
-            ora_df["term_name"] = ora_df["name"]
-        elif "term_id" in ora_df.columns:
-            ora_df["term_name"] = ora_df["term_id"]
-        elif "native" in ora_df.columns:
-            ora_df["term_name"] = ora_df["native"]
-        else:
-            return _empty_fig("ORA terms are missing labels; rerun ORA")
-    if "direction" not in ora_df.columns:
-        ora_df["direction"] = "all"
-    if "source" not in ora_df.columns:
-        ora_df["source"] = "ORA"
-    missing = [c for c in (x, "p_value", "neg_log10_p", "intersection_size", "term_size")
-               if c not in ora_df.columns]
-    if missing:
-        return _empty_fig("ORA table is missing: " + ", ".join(missing))
+    ora_df, error = _normalise_ora_plot_df(ora_df, x)
+    if error:
+        return _empty_fig(error)
+
     frames = []
     for direction, grp in ora_df.groupby("direction"):
         frames.append(grp.nsmallest(top_n, "p_value"))
