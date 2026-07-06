@@ -19,32 +19,75 @@ from . import config
 # --------------------------------------------------------------------------
 # DE-level plots
 # --------------------------------------------------------------------------
+def de_plot_table(
+    df: pd.DataFrame,
+    padj_threshold: float = config.PADJ_THRESHOLD,
+    lfc_threshold: float = config.LFC_THRESHOLD,
+) -> pd.DataFrame:
+    """Return a plotting copy with common DE display columns."""
+    d = df.copy()
+    d["neg_log10_padj"] = np.nan
+    mask = d["padj"].notna()
+    d.loc[mask, "neg_log10_padj"] = -np.log10(
+        d.loc[mask, "padj"].clip(lower=config.PVALUE_FLOOR)
+    )
+    sig = (
+        d["padj"].notna()
+        & (d["padj"] < padj_threshold)
+        & (d["log2FoldChange"].abs() > lfc_threshold)
+    )
+    d["de_status"] = np.where(
+        sig & (d["log2FoldChange"] > 0), "Up",
+        np.where(sig & (d["log2FoldChange"] < 0), "Down", "n.s."),
+    )
+    return d
+
+
+def _highlight_mask(df: pd.DataFrame, genes: list[str] | None) -> pd.Series:
+    if not genes:
+        return pd.Series(False, index=df.index)
+    wanted = {str(g).strip().lower() for g in genes if str(g).strip()}
+    mask = pd.Series(False, index=df.index)
+    for col in ("gene_id", "gene_name", "entrez_id"):
+        if col in df.columns:
+            mask |= df[col].astype(str).str.lower().isin(wanted)
+    return mask
+
+
 def volcano(
     df: pd.DataFrame,
     padj_threshold: float = config.PADJ_THRESHOLD,
     lfc_threshold: float = config.LFC_THRESHOLD,
     label_top_n: int = 12,
     label_col: str = "gene_name",
+    highlight_genes: list[str] | None = None,
 ) -> go.Figure:
     """Volcano plot coloured by significance/direction with top-gene labels."""
-    d = df.copy()
+    d = de_plot_table(df, padj_threshold, lfc_threshold)
     d = d[d["padj"].notna()]
-    d["neg_log10_padj"] = -np.log10(d["padj"].clip(lower=config.PVALUE_FLOOR))
-    sig = (d["padj"] < padj_threshold) & (d["log2FoldChange"].abs() > lfc_threshold)
-    d["cls"] = np.where(
-        sig & (d["log2FoldChange"] > 0), "Up",
-        np.where(sig & (d["log2FoldChange"] < 0), "Down", "n.s."),
-    )
     color_map = {"Up": config.COLOR_UP, "Down": config.COLOR_DOWN, "n.s.": config.COLOR_NS}
+    hover_col = label_col if label_col in d.columns else "gene_id"
 
     fig = go.Figure()
     for cls in ("n.s.", "Down", "Up"):
-        sub = d[d["cls"] == cls]
+        sub = d[d["de_status"] == cls]
         fig.add_trace(go.Scattergl(
             x=sub["log2FoldChange"], y=sub["neg_log10_padj"],
             mode="markers", name=cls,
             marker=dict(size=5, color=color_map[cls], opacity=0.6 if cls == "n.s." else 0.85),
-            text=sub[label_col] if label_col in sub.columns else None,
+            text=sub[hover_col] if hover_col in sub.columns else None,
+            hovertemplate="%{text}<br>log2FC=%{x:.2f}<br>-log10 padj=%{y:.2f}<extra></extra>",
+        ))
+
+    highlight = d[_highlight_mask(d, highlight_genes)]
+    if not highlight.empty:
+        fig.add_trace(go.Scatter(
+            x=highlight["log2FoldChange"], y=highlight["neg_log10_padj"],
+            mode="markers+text", name="Highlighted",
+            marker=dict(size=12, color="#F1C40F", symbol="star",
+                        line=dict(width=1.2, color="#111")),
+            text=highlight[hover_col] if hover_col in highlight.columns else None,
+            textposition="top center",
             hovertemplate="%{text}<br>log2FC=%{x:.2f}<br>-log10 padj=%{y:.2f}<extra></extra>",
         ))
 
@@ -55,7 +98,7 @@ def volcano(
 
     # Label the most extreme significant genes (by combined rank).
     if label_col in d.columns and label_top_n > 0:
-        sig_d = d[d["cls"] != "n.s."].copy()
+        sig_d = d[d["de_status"] != "n.s."].copy()
         sig_d["score"] = sig_d["neg_log10_padj"] * sig_d["log2FoldChange"].abs()
         for _, row in sig_d.nlargest(label_top_n, "score").iterrows():
             fig.add_annotation(
@@ -96,6 +139,120 @@ def ma_plot(df: pd.DataFrame,
     fig.add_hline(y=0, line=dict(color="#555", width=1))
     fig.update_layout(template="simple_white", xaxis_title="log10 mean expression",
                       yaxis_title="log2 fold change", height=460, title="MA plot")
+    return fig
+
+
+def de_count_bar(
+    df: pd.DataFrame,
+    padj_threshold: float = config.PADJ_THRESHOLD,
+    lfc_threshold: float = config.LFC_THRESHOLD,
+) -> go.Figure:
+    d = de_plot_table(df, padj_threshold, lfc_threshold)
+    counts = d["de_status"].value_counts().reindex(["Up", "Down", "n.s."], fill_value=0)
+    fig = go.Figure(go.Bar(
+        x=counts.index,
+        y=counts.values,
+        marker=dict(color=[config.COLOR_UP, config.COLOR_DOWN, config.COLOR_NS]),
+        text=counts.values,
+        textposition="outside",
+        hovertemplate="%{x}<br>genes=%{y}<extra></extra>",
+    ))
+    fig.update_layout(template="simple_white", height=320,
+                      title="DE gene counts", xaxis_title="", yaxis_title="Genes")
+    return fig
+
+
+def de_histogram(
+    df: pd.DataFrame,
+    column: str,
+    padj_threshold: float = config.PADJ_THRESHOLD,
+    lfc_threshold: float = config.LFC_THRESHOLD,
+    bins: int = 60,
+) -> go.Figure:
+    d = de_plot_table(df, padj_threshold, lfc_threshold)
+    d = d[pd.to_numeric(d[column], errors="coerce").notna()]
+    title_map = {
+        "padj": "Adjusted p-value distribution",
+        "pvalue": "Raw p-value distribution",
+        "log2FoldChange": "log2 fold-change distribution",
+        "baseMean": "Mean expression distribution",
+    }
+    fig = go.Figure()
+    for cls in ("n.s.", "Down", "Up"):
+        sub = d[d["de_status"] == cls]
+        x = pd.to_numeric(sub[column], errors="coerce")
+        if column == "baseMean":
+            x = np.log10(x[x > 0])
+        fig.add_trace(go.Histogram(
+            x=x, nbinsx=bins, name=cls,
+            marker_color={"Up": config.COLOR_UP, "Down": config.COLOR_DOWN,
+                          "n.s.": config.COLOR_NS}[cls],
+            opacity=0.72,
+        ))
+    x_title = "log10 baseMean" if column == "baseMean" else column
+    fig.update_layout(template="simple_white", barmode="overlay", height=360,
+                      title=title_map.get(column, f"{column} distribution"),
+                      xaxis_title=x_title, yaxis_title="Genes")
+    return fig
+
+
+def pvalue_adjustment_scatter(df: pd.DataFrame) -> go.Figure:
+    d = df.copy()
+    d = d[d["pvalue"].notna() & d["padj"].notna()]
+    fig = go.Figure(go.Scattergl(
+        x=d["pvalue"], y=d["padj"], mode="markers",
+        marker=dict(size=4, color=config.COLOR_ACCENT, opacity=0.45),
+        text=d["gene_name"] if "gene_name" in d.columns else d.get("gene_id"),
+        hovertemplate="%{text}<br>p=%{x:.2e}<br>padj=%{y:.2e}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[0, 1], y=[0, 1], mode="lines", showlegend=False,
+        line=dict(color="#888", dash="dot", width=1),
+        hoverinfo="skip",
+    ))
+    fig.update_layout(template="simple_white", height=420,
+                      title="Raw p-value vs adjusted p-value",
+                      xaxis_title="pvalue", yaxis_title="padj")
+    return fig
+
+
+def threshold_sensitivity(
+    df: pd.DataFrame,
+    padj_values: list[float] | None = None,
+    lfc_values: list[float] | None = None,
+) -> go.Figure:
+    d = df[df["padj"].notna()].copy()
+    padj_values = padj_values or [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2]
+    lfc_values = lfc_values or [0, 0.5, 1.0, 1.5, 2.0]
+    z = []
+    text = []
+    for padj in padj_values:
+        row = []
+        text_row = []
+        for lfc in lfc_values:
+            up = ((d["padj"] < padj)
+                  & (d["log2FoldChange"] > lfc)).sum()
+            down = ((d["padj"] < padj)
+                    & (d["log2FoldChange"] < -lfc)).sum()
+            total = int(up + down)
+            row.append(total)
+            text_row.append(f"total={total}<br>up={int(up)}<br>down={int(down)}")
+        z.append(row)
+        text.append(text_row)
+
+    fig = go.Figure(go.Heatmap(
+        z=z,
+        x=[str(v) for v in lfc_values],
+        y=[str(v) for v in padj_values],
+        text=text,
+        colorscale="Viridis",
+        colorbar=dict(title="DEGs"),
+        hovertemplate="padj < %{y}<br>|log2FC| > %{x}<br>%{text}<extra></extra>",
+    ))
+    fig.update_layout(template="simple_white", height=420,
+                      title="Threshold sensitivity",
+                      xaxis_title="|log2 fold change| threshold",
+                      yaxis_title="padj threshold")
     return fig
 
 
@@ -225,6 +382,174 @@ def ora_dotplot(ora_df: pd.DataFrame, top_n: int = 15,
                       height=max(360, 24 * len(d)),
                       title=f"ORA — top {top_n} terms per direction",
                       margin=dict(l=10, r=10))
+    return fig
+
+
+def _top_ora_terms(ora_df: pd.DataFrame, top_n: int,
+                   direction: str | None = None,
+                   source: str | None = None) -> pd.DataFrame:
+    d, error = _normalise_ora_plot_df(ora_df, "neg_log10_p")
+    if error or d is None:
+        return pd.DataFrame()
+    if direction and direction != "all directions":
+        d = d[d["direction"] == direction]
+    if source and source != "all sources":
+        d = d[d["source"] == source]
+    if d.empty:
+        return d
+    return d.nsmallest(top_n, "p_value")
+
+
+def ora_barplot(ora_df: pd.DataFrame, top_n: int = 20,
+                direction: str | None = None,
+                source: str | None = None) -> go.Figure:
+    d = _top_ora_terms(ora_df, top_n, direction, source)
+    if d.empty:
+        return _empty_fig("No ORA terms for this filter")
+    d = d.sort_values("neg_log10_p")
+    label = d["term_name"].astype(str).str.slice(0, 58)
+    colors = np.where(d["direction"].eq("up"), config.COLOR_UP,
+                      np.where(d["direction"].eq("down"), config.COLOR_DOWN,
+                               config.COLOR_ACCENT))
+    fig = go.Figure(go.Bar(
+        x=d["neg_log10_p"], y=label, orientation="h",
+        marker=dict(color=colors),
+        text=d["source"],
+        hovertemplate="%{y}<br>-log10 p=%{x:.2f}<br>%{text}<extra></extra>",
+    ))
+    fig.update_layout(template="simple_white", height=max(360, 24 * len(d)),
+                      title=f"ORA top {top_n} terms",
+                      xaxis_title="-log10 p", yaxis_title="")
+    return fig
+
+
+def ora_source_bubble(ora_df: pd.DataFrame, top_n: int = 40) -> go.Figure:
+    d = _top_ora_terms(ora_df, top_n)
+    if d.empty:
+        return _empty_fig("No ORA terms")
+    size_max = d["intersection_size"].max()
+    if pd.isna(size_max) or size_max <= 0:
+        size_max = 1
+    fig = go.Figure(go.Scatter(
+        x=d["gene_ratio"], y=d["source"], mode="markers",
+        marker=dict(
+            size=8 + 26 * (d["intersection_size"] / size_max),
+            color=d["neg_log10_p"], colorscale="Viridis",
+            colorbar=dict(title="-log10 p"),
+            line=dict(width=0.5, color="#333"),
+        ),
+        text=d.apply(lambda r: f"{r['term_name']}<br>{r['direction']}"
+                                f"<br>genes={r['intersection_size']}/{r['term_size']}"
+                                f"<br>p={r['p_value']:.2e}", axis=1),
+        hovertemplate="%{text}<extra></extra>",
+    ))
+    fig.update_layout(template="simple_white", height=420,
+                      title=f"ORA source bubble plot (top {top_n})",
+                      xaxis_title="gene ratio", yaxis_title="source")
+    return fig
+
+
+def _parse_gene_list(value) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value if str(v)]
+    if pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    for ch in "[](){}'\"":
+        text = text.replace(ch, "")
+    sep = ";" if ";" in text else "," if "," in text else "|"
+    return [part.strip() for part in text.split(sep) if part.strip()]
+
+
+def _ora_term_gene_frame(ora_df: pd.DataFrame, top_n: int) -> pd.DataFrame:
+    d = _top_ora_terms(ora_df, top_n)
+    if d.empty or "genes" not in d.columns:
+        return pd.DataFrame()
+    rows = []
+    for _, row in d.iterrows():
+        for gene in _parse_gene_list(row["genes"]):
+            rows.append({
+                "term": str(row["term_name"])[:60],
+                "gene": gene,
+                "source": row["source"],
+                "direction": row["direction"],
+                "neg_log10_p": row["neg_log10_p"],
+            })
+    return pd.DataFrame(rows)
+
+
+def ora_gene_heatmap(ora_df: pd.DataFrame, top_n: int = 15,
+                     max_genes: int = 45) -> go.Figure:
+    edges = _ora_term_gene_frame(ora_df, top_n)
+    if edges.empty:
+        return _empty_fig("No ORA gene intersections available")
+    genes = edges["gene"].value_counts().head(max_genes).index.tolist()
+    terms = edges["term"].drop_duplicates().tolist()
+    z = []
+    for term in terms:
+        term_genes = set(edges.loc[edges["term"] == term, "gene"])
+        z.append([1 if gene in term_genes else 0 for gene in genes])
+    fig = go.Figure(go.Heatmap(
+        z=z, x=genes, y=terms, colorscale=[[0, "#f2f2f2"], [1, config.COLOR_ACCENT]],
+        showscale=False,
+        hovertemplate="%{y}<br>%{x}<extra></extra>",
+    ))
+    fig.update_layout(template="simple_white", height=max(360, 24 * len(terms)),
+                      title=f"ORA term-gene heatmap (top {top_n})",
+                      xaxis=dict(tickangle=45), xaxis_title="Genes",
+                      yaxis_title="Terms")
+    return fig
+
+
+def ora_gene_network(ora_df: pd.DataFrame, top_n: int = 12,
+                     max_genes: int = 40) -> go.Figure:
+    edges = _ora_term_gene_frame(ora_df, top_n)
+    if edges.empty:
+        return _empty_fig("No ORA gene intersections available")
+    keep_genes = set(edges["gene"].value_counts().head(max_genes).index)
+    edges = edges[edges["gene"].isin(keep_genes)]
+    if edges.empty:
+        return _empty_fig("No ORA gene intersections available")
+
+    import networkx as nx
+    graph = nx.Graph()
+    for _, row in edges.iterrows():
+        term = "term:" + row["term"]
+        gene = "gene:" + row["gene"]
+        graph.add_node(term, label=row["term"], kind="term", score=row["neg_log10_p"])
+        graph.add_node(gene, label=row["gene"], kind="gene", score=0)
+        graph.add_edge(term, gene)
+    pos = nx.spring_layout(graph, seed=config.GSEA_SEED, k=0.75)
+    edge_x, edge_y = [], []
+    for a, b in graph.edges():
+        edge_x += [pos[a][0], pos[b][0], None]
+        edge_y += [pos[a][1], pos[b][1], None]
+    edge_trace = go.Scatter(x=edge_x, y=edge_y, mode="lines",
+                            line=dict(width=0.7, color="#cccccc"),
+                            hoverinfo="none")
+    term_nodes = [n for n, data in graph.nodes(data=True) if data["kind"] == "term"]
+    gene_nodes = [n for n, data in graph.nodes(data=True) if data["kind"] == "gene"]
+    traces = [edge_trace]
+    for nodes, name, color, size in (
+        (term_nodes, "Terms", config.COLOR_ACCENT, 16),
+        (gene_nodes, "Genes", "#6C7A89", 9),
+    ):
+        traces.append(go.Scatter(
+            x=[pos[n][0] for n in nodes],
+            y=[pos[n][1] for n in nodes],
+            mode="markers+text",
+            name=name,
+            marker=dict(size=size, color=color, line=dict(width=0.5, color="#222")),
+            text=[graph.nodes[n]["label"][:24] for n in nodes],
+            textposition="top center",
+            hovertemplate="%{text}<extra></extra>",
+        ))
+    fig = go.Figure(traces)
+    fig.update_layout(template="simple_white", height=620,
+                      title=f"ORA term-gene network (top {top_n})",
+                      xaxis=dict(visible=False), yaxis=dict(visible=False))
     return fig
 
 
