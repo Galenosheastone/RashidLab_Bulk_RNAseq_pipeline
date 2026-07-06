@@ -147,6 +147,67 @@ def execute(p: dict) -> list[ContrastResult]:
     return results
 
 
+def _gene_columns(df: pd.DataFrame) -> list[str]:
+    preferred = ["gene_id", "gene_name", "entrez_id"]
+    return [c for c in preferred if c in df.columns]
+
+
+def _parse_gene_text(text: str) -> list[str]:
+    text = (text or "").replace(",", "\n").replace(";", "\n")
+    return [g.strip() for g in text.splitlines() if g.strip()]
+
+
+def _gene_label(row: pd.Series) -> str:
+    parts = []
+    for col in ("gene_name", "gene_id", "entrez_id"):
+        if col in row.index and pd.notna(row[col]):
+            value = str(row[col])
+            if value and value not in parts:
+                parts.append(value)
+    return " / ".join(parts) if parts else str(row.name)
+
+
+def _top_gene_ids(df: pd.DataFrame, preset: str, n: int) -> list[str]:
+    d = df[df["padj"].notna()].copy()
+    if d.empty:
+        return []
+    if preset == "Top up":
+        d = d[d["log2FoldChange"] > 0].sort_values(
+            ["padj", "log2FoldChange"], ascending=[True, False]
+        )
+    elif preset == "Top down":
+        d = d[d["log2FoldChange"] < 0].sort_values(
+            ["padj", "log2FoldChange"], ascending=[True, True]
+        )
+    elif preset == "Most significant":
+        d = d.sort_values("padj")
+    else:
+        return []
+    id_col = "gene_name" if "gene_name" in d.columns else "gene_id"
+    return d[id_col].dropna().astype(str).head(n).tolist()
+
+
+def _parse_ora_genes(value) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value if str(v)]
+    if pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    for ch in "[](){}'\"":
+        text = text.replace(ch, "")
+    sep = ";" if ";" in text else "," if "," in text else "|"
+    return [part.strip() for part in text.split(sep) if part.strip()]
+
+
+def _ora_label(row: pd.Series) -> str:
+    term = row.get("term_name", row.get("term_id", "term"))
+    source = row.get("source", "ORA")
+    direction = row.get("direction", "all")
+    return f"{term} ({source}, {direction})"
+
+
 # --------------------------------------------------------------------------
 # Tabs
 # --------------------------------------------------------------------------
@@ -162,11 +223,169 @@ def tab_qc(res: ContrastResult, p: dict):
         st.text(res.report.as_text())
     left, right = st.columns(2)
     with left:
-        st.plotly_chart(plots.volcano(res.df, p["padj"], p["lfc"]),
+        st.plotly_chart(plots.de_count_bar(res.df, p["padj"], p["lfc"]),
                         use_container_width=True)
     with right:
         st.plotly_chart(plots.ma_plot(res.df, p["padj"], p["lfc"]),
                         use_container_width=True)
+
+
+def tab_genes(res: ContrastResult, p: dict):
+    st.subheader(f"Gene explorer — {res.name}")
+    d = plots.de_plot_table(res.df, p["padj"], p["lfc"])
+    gene_cols = _gene_columns(d)
+    if not gene_cols:
+        st.info("No gene identifier columns were detected.")
+        return
+
+    filters = st.columns([1.5, 1, 1, 1])
+    with filters[0]:
+        query = st.text_input("Search genes", key=f"gene_query_{res.name}")
+    with filters[1]:
+        statuses = st.multiselect(
+            "Status", ["Up", "Down", "n.s."],
+            default=["Up", "Down", "n.s."], key=f"gene_status_{res.name}"
+        )
+    with filters[2]:
+        max_padj = st.number_input(
+            "Max padj", min_value=0.0, max_value=1.0, value=1.0,
+            step=0.01, format="%.3f", key=f"gene_padj_{res.name}"
+        )
+    with filters[3]:
+        min_abs_lfc = st.number_input(
+            "Min |log2FC|", min_value=0.0, value=0.0, step=0.25,
+            key=f"gene_lfc_{res.name}"
+        )
+
+    filtered = d.copy()
+    if query:
+        q = query.strip().lower()
+        mask = pd.Series(False, index=filtered.index)
+        for col in gene_cols:
+            mask |= filtered[col].astype(str).str.lower().str.contains(q, na=False)
+        filtered = filtered[mask]
+    if statuses:
+        filtered = filtered[filtered["de_status"].isin(statuses)]
+    filtered = filtered[
+        (filtered["padj"].isna() | (filtered["padj"] <= max_padj))
+        & (filtered["log2FoldChange"].abs() >= min_abs_lfc)
+    ]
+
+    sort_choice = st.selectbox(
+        "Sort genes",
+        ["padj ascending", "|log2FC| descending", "baseMean descending"],
+        key=f"gene_sort_{res.name}",
+    )
+    if sort_choice == "|log2FC| descending":
+        filtered = filtered.assign(abs_lfc=filtered["log2FoldChange"].abs()).sort_values(
+            "abs_lfc", ascending=False
+        )
+    elif sort_choice == "baseMean descending" and "baseMean" in filtered.columns:
+        filtered = filtered.sort_values("baseMean", ascending=False)
+    else:
+        filtered = filtered.sort_values("padj", na_position="last")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Filtered genes", f"{len(filtered):,}")
+    c2.metric("Up", int((filtered["de_status"] == "Up").sum()))
+    c3.metric("Down", int((filtered["de_status"] == "Down").sum()))
+
+    show_cols = [
+        c for c in [
+            "gene_id", "gene_name", "entrez_id", "de_status", "baseMean",
+            "log2FoldChange", "stat", "pvalue", "padj", "neg_log10_padj",
+        ] if c in filtered.columns
+    ]
+    st.dataframe(filtered[show_cols], use_container_width=True, height=360)
+    st.download_button(
+        "⬇ Filtered genes (CSV)",
+        filtered[show_cols].to_csv(index=False),
+        file_name=f"{res.name}_filtered_genes.csv",
+        mime="text/csv",
+    )
+
+    if filtered.empty:
+        return
+    options = filtered.head(2500).index.tolist()
+    selected_idx = st.selectbox(
+        "Gene detail", options, format_func=lambda i: _gene_label(filtered.loc[i]),
+        key=f"gene_detail_{res.name}"
+    )
+    row = filtered.loc[selected_idx]
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Status", str(row["de_status"]))
+    m2.metric("log2FC", f"{row['log2FoldChange']:.3g}")
+    m3.metric("padj", f"{row['padj']:.3g}" if pd.notna(row["padj"]) else "NA")
+    if "baseMean" in row.index and pd.notna(row["baseMean"]):
+        m4.metric("baseMean", f"{row['baseMean']:.3g}")
+    else:
+        m4.metric("baseMean", "NA")
+    with st.expander("Full selected-gene row", expanded=False):
+        st.dataframe(row.to_frame("value"), use_container_width=True)
+    if st.button("Highlight this gene in volcano", key=f"gene_highlight_{res.name}"):
+        st.session_state[f"highlight_genes_{res.name}"] = [_gene_label(row).split(" / ")[0]]
+
+
+def tab_de_plots(res: ContrastResult, p: dict):
+    st.subheader(f"Differential expression plots — {res.name}")
+    label_cols = _gene_columns(res.df) or ["gene_id"]
+    controls = st.columns([1, 1, 1, 1])
+    with controls[0]:
+        label_col = st.selectbox("Volcano label", label_cols,
+                                 key=f"volcano_label_{res.name}")
+    with controls[1]:
+        label_top_n = st.slider("Top labels", 0, 40, 12,
+                                key=f"volcano_label_n_{res.name}")
+    with controls[2]:
+        preset = st.selectbox(
+            "Highlight preset", ["Custom", "Top up", "Top down", "Most significant"],
+            key=f"volcano_preset_{res.name}",
+        )
+    with controls[3]:
+        preset_n = st.slider("Highlight N", 1, 30, 8,
+                             key=f"volcano_preset_n_{res.name}")
+
+    highlight_key = f"highlight_genes_{res.name}"
+    saved_highlights = st.session_state.get(highlight_key, [])
+    if preset == "Custom":
+        highlight_text = st.text_area(
+            "Highlight genes", value="\n".join(saved_highlights), height=80,
+            key=f"volcano_highlight_text_{res.name}",
+        )
+        highlight_genes = _parse_gene_text(highlight_text)
+        st.session_state[highlight_key] = highlight_genes
+    else:
+        highlight_genes = _top_gene_ids(res.df, preset, preset_n)
+
+    left, right = st.columns([1.4, 1])
+    with left:
+        st.plotly_chart(
+            plots.volcano(
+                res.df, p["padj"], p["lfc"], label_top_n=label_top_n,
+                label_col=label_col, highlight_genes=highlight_genes,
+            ),
+            use_container_width=True,
+        )
+    with right:
+        st.plotly_chart(plots.de_count_bar(res.df, p["padj"], p["lfc"]),
+                        use_container_width=True)
+        st.plotly_chart(plots.ma_plot(res.df, p["padj"], p["lfc"]),
+                        use_container_width=True)
+
+    d1, d2 = st.columns(2)
+    with d1:
+        st.plotly_chart(plots.de_histogram(res.df, "log2FoldChange", p["padj"], p["lfc"]),
+                        use_container_width=True)
+        st.plotly_chart(plots.de_histogram(res.df, "padj", p["padj"], p["lfc"]),
+                        use_container_width=True)
+    with d2:
+        if "baseMean" in res.df.columns:
+            st.plotly_chart(plots.de_histogram(res.df, "baseMean", p["padj"], p["lfc"]),
+                            use_container_width=True)
+        st.plotly_chart(plots.pvalue_adjustment_scatter(res.df),
+                        use_container_width=True)
+
+    st.plotly_chart(plots.threshold_sensitivity(res.df), use_container_width=True)
 
 
 def tab_ora(res: ContrastResult):
@@ -177,14 +396,88 @@ def tab_ora(res: ContrastResult):
     if res.ora is None or res.ora.empty:
         st.info("No ORA results. Run ORA with at least one source selected.")
         return
-    top_n = st.slider("Top terms per direction", 5, 40, 15, key=f"ora_n_{res.name}")
-    xmetric = st.radio("X axis", ["gene_ratio", "recall", "neg_log10_p"],
+    ora = res.ora.copy()
+    controls = st.columns([1, 1, 1, 1])
+    with controls[0]:
+        sources = sorted(ora["source"].dropna().astype(str).unique()) if "source" in ora else []
+        source_sel = st.multiselect("Source", sources, default=sources,
+                                    key=f"ora_source_filter_{res.name}")
+    with controls[1]:
+        directions = sorted(ora["direction"].dropna().astype(str).unique()) if "direction" in ora else []
+        direction_sel = st.multiselect("Direction", directions, default=directions,
+                                       key=f"ora_dir_filter_{res.name}")
+    with controls[2]:
+        max_p = st.number_input("Max ORA p", min_value=0.0, max_value=1.0,
+                                value=1.0, step=0.01, format="%.3f",
+                                key=f"ora_p_filter_{res.name}")
+    with controls[3]:
+        term_query = st.text_input("Search terms", key=f"ora_search_{res.name}")
+
+    if source_sel and "source" in ora.columns:
+        ora = ora[ora["source"].astype(str).isin(source_sel)]
+    if direction_sel and "direction" in ora.columns:
+        ora = ora[ora["direction"].astype(str).isin(direction_sel)]
+    if "p_value" in ora.columns:
+        ora = ora[pd.to_numeric(ora["p_value"], errors="coerce") <= max_p]
+    if term_query:
+        q = term_query.strip().lower()
+        mask = pd.Series(False, index=ora.index)
+        for col in ("term_name", "term_id", "source"):
+            if col in ora.columns:
+                mask |= ora[col].astype(str).str.lower().str.contains(q, na=False)
+        ora = ora[mask]
+
+    if ora.empty:
+        st.info("No ORA terms match the current filters.")
+        return
+
+    top_n = st.slider("Top terms", 5, 60, 20, key=f"ora_n_{res.name}")
+    xmetric = st.radio("Dotplot X axis", ["gene_ratio", "recall", "neg_log10_p"],
                        horizontal=True, key=f"ora_x_{res.name}")
-    st.plotly_chart(plots.ora_dotplot(res.ora, top_n, xmetric),
-                    use_container_width=True)
-    st.dataframe(res.ora, use_container_width=True, height=320)
-    st.download_button("⬇ ORA table (CSV)", res.ora.to_csv(index=False),
-                       file_name=f"{res.name}_ORA.csv", mime="text/csv")
+
+    v_dot, v_bar, v_bubble, v_heat, v_net, v_table = st.tabs(
+        ["Dotplot", "Bar", "Source Bubble", "Gene Heatmap", "Gene Network", "Table"]
+    )
+    with v_dot:
+        st.plotly_chart(plots.ora_dotplot(ora, top_n, xmetric),
+                        use_container_width=True)
+    with v_bar:
+        st.plotly_chart(plots.ora_barplot(ora, top_n),
+                        use_container_width=True)
+    with v_bubble:
+        st.plotly_chart(plots.ora_source_bubble(ora, top_n),
+                        use_container_width=True)
+    with v_heat:
+        st.plotly_chart(plots.ora_gene_heatmap(ora, min(top_n, 25)),
+                        use_container_width=True)
+    with v_net:
+        st.plotly_chart(plots.ora_gene_network(ora, min(top_n, 18)),
+                        use_container_width=True)
+    with v_table:
+        st.dataframe(ora, use_container_width=True, height=320)
+
+    term_options = ora.sort_values("p_value").index.tolist() if "p_value" in ora.columns else ora.index.tolist()
+    selected_term = st.selectbox(
+        "Term detail", term_options, format_func=lambda i: _ora_label(ora.loc[i]),
+        key=f"ora_term_detail_{res.name}",
+    )
+    term_row = ora.loc[selected_term]
+    t1, t2, t3, t4 = st.columns(4)
+    t1.metric("Source", str(term_row.get("source", "ORA")))
+    t2.metric("Direction", str(term_row.get("direction", "all")))
+    t3.metric("p-value", f"{term_row.get('p_value', float('nan')):.3g}")
+    t4.metric("Genes", str(term_row.get("intersection_size", "NA")))
+    genes = _parse_ora_genes(term_row.get("genes", []))
+    if genes:
+        st.dataframe(pd.DataFrame({"genes": genes}), use_container_width=True, height=180)
+        st.download_button(
+            "⬇ Term genes (CSV)",
+            pd.DataFrame({"genes": genes}).to_csv(index=False),
+            file_name=f"{res.name}_{term_row.get('term_id', 'ORA_term')}_genes.csv",
+            mime="text/csv",
+        )
+    st.download_button("⬇ Filtered ORA table (CSV)", ora.to_csv(index=False),
+                       file_name=f"{res.name}_ORA_filtered.csv", mime="text/csv")
 
 
 def tab_gsea(res: ContrastResult):
@@ -310,11 +603,15 @@ def main():
         st.error(f"Could not load {res.name}: missing columns {res.errors['load']}")
         return
 
-    t_qc, t_ora, t_gsea, t_cmp, t_exp = st.tabs(
-        ["Upload & QC", "ORA", "GSEA", "Compare", "Export"]
+    t_qc, t_genes, t_de, t_ora, t_gsea, t_cmp, t_exp = st.tabs(
+        ["Upload & QC", "Genes", "DE Plots", "ORA", "GSEA", "Compare", "Export"]
     )
     with t_qc:
         tab_qc(res, params)
+    with t_genes:
+        tab_genes(res, params)
+    with t_de:
+        tab_de_plots(res, params)
     with t_ora:
         tab_ora(res)
     with t_gsea:
