@@ -96,7 +96,11 @@ def sidebar() -> dict:
                               help="1000 → 100 permutations for a fast preview.")
     do_ora = st.sidebar.checkbox("Run ORA", value=True)
     do_gsea = st.sidebar.checkbox("Run GSEA", value=True)
-    run = st.sidebar.button("▶ Run enrichment", type="primary", use_container_width=True)
+    try:
+        run = st.sidebar.button("▶ Run enrichment", type="primary", width="stretch")
+    except TypeError:
+        run = st.sidebar.button("▶ Run enrichment", type="primary",
+                                use_container_width=True)
 
     st.sidebar.caption("Uploaded data is processed in memory and not stored.")
 
@@ -218,10 +222,12 @@ def _plotly(fig, key: str):
 def _dataframe(df: pd.DataFrame, *, key: str | None = None,
                height: int | None = None):
     kwargs = {"key": key} if key else {}
+    if height is not None:
+        kwargs["height"] = height
     try:
-        st.dataframe(df, width="stretch", height=height, **kwargs)
+        st.dataframe(df, width="stretch", **kwargs)
     except TypeError:
-        st.dataframe(df, use_container_width=True, height=height, **kwargs)
+        st.dataframe(df, use_container_width=True, **kwargs)
 
 
 # --------------------------------------------------------------------------
