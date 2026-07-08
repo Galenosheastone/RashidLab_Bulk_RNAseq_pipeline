@@ -1,0 +1,2 @@
+[console_scripts]
+deseq2-enrich = deseq2_enrich.cli:main
