@@ -2,8 +2,7 @@
 
 Keeping all tunable defaults in one place makes the CLI and the Streamlit app
 behave identically and keeps the "reproduce my existing DEG column" promise
-honest: the defaults below match a DESeq2 export filtered at padj < 0.05 and
-|log2FoldChange| > 1.
+honest: the defaults below use padj < 0.05 with no fold-change cutoff.
 """
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ ORTHOLOG_TARGET = "hsapiens"  # GSEA is run against human MSigDB via orthologs
 
 # --- DEG selection defaults ----------------------------------------------
 PADJ_THRESHOLD = 0.05
-LFC_THRESHOLD = 1.0
+LFC_THRESHOLD = 0.0
 
 # --- GSEA ranking ---------------------------------------------------------
 # 'stat'        : DESeq2 Wald statistic (recommended; signed, magnitude-aware)
@@ -45,8 +44,6 @@ GSEA_LIBRARIES = {
     "WikiPathway_2023_Human": "WikiPathways (Human 2023)",
     "MSigDB_Oncogenic_Signatures": "MSigDB Oncogenic",
     "KEGG_2021_Human": "KEGG (Human 2021)",
-    # C2 canonical is large (~3k sets); opt-in via the app.
-    "MSigDB_Curated_Canonical_Pathways": "MSigDB C2 Canonical",
 }
 GSEA_DEFAULT_LIBRARIES = ["MSigDB_Hallmark_2020", "Reactome_2022"]
 

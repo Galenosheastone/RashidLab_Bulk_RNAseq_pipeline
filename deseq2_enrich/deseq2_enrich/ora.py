@@ -126,22 +126,22 @@ def run_ora_directional(
         frames.append(
             run_ora(query, deg_sets.universe, sources, organism, direction)
         )
+    frames = [frame for frame in frames if frame is not None and not frame.empty]
     if not frames:
         return _empty_ora()
     return pd.concat(frames, ignore_index=True)
 
 
 def _flatten_intersection(x):
+    """Return flat gene labels from g:Profiler's intersections column.
+
+    g:Profiler's intersections column is a flat list of query gene labels that
+    hit the term. Nested evidence codes live in a separate column, not here.
+    """
+    if x is None:
+        return []
     if isinstance(x, (list, tuple)):
-        # g:Profiler returns nested lists of evidence codes per gene; the query
-        # gene labels are in the first position of each sub-list.
-        out = []
-        for item in x:
-            if isinstance(item, (list, tuple)) and item:
-                out.append(str(item[0]))
-            else:
-                out.append(str(item))
-        return out
+        return [str(item) for item in x if item is not None]
     return []
 
 

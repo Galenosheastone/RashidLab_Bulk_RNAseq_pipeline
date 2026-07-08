@@ -12,30 +12,32 @@ Design notes
 from __future__ import annotations
 
 import io as _io
+import hashlib
 import os
-import sys
 import json
+import platform
+import sys
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
+from importlib.resources import files
 
+import gprofiler
+import gseapy
 import pandas as pd
 import streamlit as st
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-PACKAGE_PARENT = os.path.join(APP_DIR, "deseq2_enrich")
-if not os.path.isdir(os.path.join(PACKAGE_PARENT, "deseq2_enrich")):
-    PACKAGE_PARENT = os.path.dirname(APP_DIR)
-sys.path.insert(0, PACKAGE_PARENT)
-
-from deseq2_enrich import config, plots, genesets  # noqa: E402
-from deseq2_enrich.pipeline import run_contrast, ContrastResult  # noqa: E402
+# deseq2_enrich is installed via pip install -e .; no sys.path hack needed.
+import deseq2_enrich
+from deseq2_enrich import config, plots, genesets
+from deseq2_enrich.pipeline import run_contrast, ContrastResult
 
 st.set_page_config(page_title="DESeq2 Enrichment", layout="wide",
                    page_icon="🧬")
 
-SAMPLE_PATH = os.path.join(
-    PACKAGE_PARENT,
-    "sample_data", "DESeq2_Sacral_vs_Sacralized_Caudal_all.tsv",
+SAMPLE_PATH = str(
+    files("deseq2_enrich").joinpath(
+        "..", "sample_data", "DESeq2_chicken_demo.tsv"
+    )
 )
 
 
@@ -48,7 +50,7 @@ def sidebar() -> dict:
 
     st.sidebar.subheader("1 · Data")
     use_sample = st.sidebar.toggle("Use bundled sample data", value=True,
-                                   help="The synthetic Sacral vs Caudal DESeq2 table.")
+                                   help="Real GSE230804 chick hindbrain DESeq2 demo table.")
     uploads = st.sidebar.file_uploader(
         "Or upload DESeq2 result table(s)", type=["tsv", "csv", "txt"],
         accept_multiple_files=True,
@@ -94,6 +96,12 @@ def sidebar() -> dict:
     st.sidebar.subheader("6 · Compute")
     quick = st.sidebar.toggle("Quick mode (fewer permutations)", value=True,
                               help="1000 → 100 permutations for a fast preview.")
+    if quick:
+        st.sidebar.warning(
+            "Quick mode (100 permutations) is for previews only. "
+            "GSEA FDRs are unstable — do not report these values.",
+            icon="⚠️",
+        )
     do_ora = st.sidebar.checkbox("Run ORA", value=True)
     do_gsea = st.sidebar.checkbox("Run GSEA", value=True)
     try:
@@ -102,6 +110,10 @@ def sidebar() -> dict:
         run = st.sidebar.button("▶ Run enrichment", type="primary",
                                 use_container_width=True)
 
+    st.sidebar.caption(
+        "Changes below take effect on the next 'Run enrichment' click. "
+        "Plot controls inside tabs update immediately."
+    )
     st.sidebar.caption("Uploaded data is processed in memory and not stored.")
 
     return dict(
@@ -123,7 +135,7 @@ def execute(p: dict) -> list[ContrastResult]:
             name = os.path.splitext(f.name)[0]
             inputs.append((name, f))
     elif p["use_sample"]:
-        inputs.append(("Sacral_vs_Sacralized_Caudal", SAMPLE_PATH))
+        inputs.append(("GSE230804_CSPG_positive_vs_negative", SAMPLE_PATH))
     if not inputs:
         st.warning("Upload a DESeq2 table or enable the sample data.")
         return []
@@ -134,6 +146,7 @@ def execute(p: dict) -> list[ContrastResult]:
         custom = genesets.load_gmt(lines)
 
     results = []
+    needs_mapping = {}
     prog = st.progress(0.0, text="Starting…")
     for i, (name, src) in enumerate(inputs):
         prog.progress(i / len(inputs), text=f"Enriching {name}…")
@@ -145,9 +158,16 @@ def execute(p: dict) -> list[ContrastResult]:
             custom_gmt=custom, do_ora=p["do_ora"], do_gsea=p["do_gsea"],
             gsea_permutations=p["permutations"],
         )
+        if res.report.missing_required:
+            needs_mapping[name] = list(res.report.missing_required)
+            st.session_state[f"raw_cols_{name}"] = list(res.df.columns)
         results.append(res)
     prog.progress(1.0, text="Done")
     prog.empty()
+    if needs_mapping:
+        st.session_state["needs_column_mapping"] = needs_mapping
+    else:
+        st.session_state.pop("needs_column_mapping", None)
     return results
 
 
@@ -228,6 +248,97 @@ def _dataframe(df: pd.DataFrame, *, key: str | None = None,
         st.dataframe(df, width="stretch", **kwargs)
     except TypeError:
         st.dataframe(df, use_container_width=True, **kwargs)
+
+
+def render_column_mapping_help():
+    needs_mapping = st.session_state.get("needs_column_mapping")
+    if not needs_mapping:
+        return
+    st.subheader("Column Mapping Needed")
+    for cname, missing in needs_mapping.items():
+        st.error(f"'{cname}' is missing required columns: {missing}")
+        raw_cols = st.session_state.get(f"raw_cols_{cname}", [])
+        if raw_cols:
+            st.caption("Observed columns after auto-detection:")
+            st.code("\n".join(raw_cols), language="text")
+
+
+def render_front_page():
+    st.title("DESeq2 Enrichment Explorer")
+    st.caption(
+        "A chicken-first ORA and pre-ranked GSEA workflow for DESeq2 result tables."
+    )
+
+    st.markdown(
+        """
+        This app starts from a DESeq2 differential-expression table, selects
+        differentially expressed genes using the sidebar thresholds, runs
+        native-chicken over-representation analysis with g:Profiler, maps genes
+        to human orthologs for MSigDB-style GSEA, and returns interactive plots
+        plus exportable result tables.
+        """
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.subheader("Input")
+        st.markdown(
+            """
+            Upload one TSV, CSV, or TXT file per contrast. Required columns are
+            `gene_id`, `log2FoldChange`, `pvalue`, and `padj`; common aliases
+            like `symbol`, `log2fc`, `p`, and `qvalue` are detected.
+            """
+        )
+    with c2:
+        st.subheader("Analysis")
+        st.markdown(
+            """
+            ORA uses the tested genes with non-missing `padj` as the background.
+            GSEA ranks genes by the DESeq2 Wald `stat` by default and scores
+            selected pathway libraries or an uploaded GMT file.
+            """
+        )
+    with c3:
+        st.subheader("Output")
+        st.markdown(
+            """
+            Review QC, gene tables, volcano and MA plots, ORA term views,
+            GSEA running-score plots, enrichment networks, contrast comparisons,
+            and a reproducible export bundle.
+            """
+        )
+
+    st.subheader("How to Run")
+    st.markdown(
+        """
+        1. Use the bundled GSE230804 chick hindbrain sample, or upload your own
+           DESeq2 result table in the sidebar.
+        2. Set `padj`, optional `|log2FC|`, ORA sources, and GSEA libraries.
+        3. Click **Run enrichment** in the sidebar.
+        4. Open the result tabs to inspect genes, enrichment terms, plots, and
+           export files.
+        """
+    )
+
+    st.info(
+        "Quick mode uses 100 GSEA permutations and is only for previewing. "
+        "Use full 1000 permutations before reporting GSEA FDR values.",
+        icon="⚠️",
+    )
+
+    with st.expander("Expected DESeq2 Table Shape", expanded=False):
+        st.markdown(
+            """
+            Minimum columns:
+
+            `gene_id`, `log2FoldChange`, `pvalue`, `padj`
+
+            Helpful optional columns:
+
+            `gene_name`, `entrez_id`, `baseMean`, `stat`, `lfcSE`,
+            `gene_biotype`
+            """
+        )
 
 
 # --------------------------------------------------------------------------
@@ -416,6 +527,10 @@ def tab_ora(res: ContrastResult):
     st.subheader(f"Over-representation (ORA) — {res.name}")
     if "ora" in res.errors:
         st.error(f"ORA failed: {res.errors['ora']}")
+        tb = res.errors.get("ora_traceback")
+        if tb:
+            with st.expander("Show error details", expanded=False):
+                st.code(tb, language="text")
         return
     if res.ora is None or res.ora.empty:
         st.info("No ORA results. Run ORA with at least one source selected.")
@@ -507,8 +622,20 @@ def tab_ora(res: ContrastResult):
 
 def tab_gsea(res: ContrastResult):
     st.subheader(f"Gene-set enrichment (GSEA) — {res.name}")
+    params = st.session_state.get("params", {})
+    if params.get("permutations", 0) < 1000:
+        st.warning(
+            f"GSEA was run with {params.get('permutations')} permutations "
+            "(Quick mode). Q-values are noisy. Rerun with full 1000 "
+            "permutations before reporting.",
+            icon="⚠️",
+        )
     if "gsea" in res.errors:
         st.error(f"GSEA failed: {res.errors['gsea']}")
+        tb = res.errors.get("gsea_traceback")
+        if tb:
+            with st.expander("Show error details", expanded=False):
+                st.code(tb, language="text")
         return
     if res.gsea is None or res.gsea.table.empty:
         st.info("No GSEA results. Select at least one library or upload a GMT.")
@@ -573,13 +700,42 @@ def tab_export(results: list[ContrastResult], p: dict):
     if st.button("📦 Build export bundle"):
         buf = _io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            def _sha256_of_uploaded(f):
+                if f is None:
+                    return None
+                f.seek(0)
+                data = f.read()
+                f.seek(0)
+                return hashlib.sha256(data).hexdigest()
+
             manifest = {
-                "generated": datetime.utcnow().isoformat() + "Z",
+                "generated": datetime.now(timezone.utc).isoformat(),
+                "deseq2_enrich_version": deseq2_enrich.__version__,
+                "python": sys.version.split()[0],
+                "platform": platform.platform(),
+                "packages": {
+                    "streamlit": st.__version__,
+                    "pandas": pd.__version__,
+                    "gseapy": gseapy.__version__,
+                    "gprofiler": getattr(gprofiler, "__version__", "unknown"),
+                },
                 "parameters": {k: v for k, v in p.items()
                                if k not in ("uploads", "custom_gmt_file", "run")},
                 "contrasts": [r.name for r in results],
+                "input_hashes": {
+                    f.name: _sha256_of_uploaded(f) for f in (p.get("uploads") or [])
+                },
             }
             z.writestr("run_manifest.json", json.dumps(manifest, indent=2, default=str))
+            permutations = p.get("permutations", 0)
+            perm_note = (
+                f"GSEA permutations: {permutations}\n"
+                + (
+                    "WARNING: Quick mode was used. GSEA FDRs are unstable.\n"
+                    if permutations < 1000 else ""
+                )
+            )
+            z.writestr("README_bundle.txt", perm_note)
             for r in results:
                 if r.ora is not None and not r.ora.empty:
                     z.writestr(f"{r.name}/ORA.csv", r.ora.to_csv(index=False))
@@ -607,19 +763,15 @@ def main():
 
     results = st.session_state.get("results")
     if not results:
-        st.title("DESeq2 → ORA / GSEA")
-        st.markdown(
-            "Upload one or more **DESeq2 result tables** (or use the bundled sample), "
-            "set thresholds in the sidebar, and click **Run enrichment**.\n\n"
-            "* **ORA** runs on native chicken annotations via g:Profiler "
-            "(GO / KEGG / Reactome / WikiPathways) with your tested genes as background.\n"
-            "* **GSEA** ranks by the DESeq2 Wald statistic, maps chicken → human "
-            "orthologs, and scores against MSigDB / Reactome collections.\n"
-            "* Add a **custom .gmt** to score your own curated pathway modules."
-        )
+        render_front_page()
         return
 
-    params = st.session_state.get("params", p)
+    if "params" not in st.session_state:
+        render_front_page()
+        return
+
+    params = st.session_state["params"]
+    render_column_mapping_help()
     names = [r.name for r in results]
     chosen = st.selectbox("Contrast", names) if len(names) > 1 else names[0]
     res = next(r for r in results if r.name == chosen)

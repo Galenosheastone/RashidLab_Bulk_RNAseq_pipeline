@@ -1,3 +1,25 @@
+Metadata-Version: 2.4
+Name: deseq2_enrich
+Version: 0.1.0
+Summary: DESeq2 -> ORA/GSEA enrichment pipeline and Streamlit app (chicken-first, pure Python)
+Author: Galen O'Shea-Stone
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: streamlit>=1.36
+Requires-Dist: pandas>=2.1
+Requires-Dist: numpy>=1.26
+Requires-Dist: gseapy<2,>=1.1
+Requires-Dist: gprofiler-official>=1.0
+Requires-Dist: plotly>=5.22
+Requires-Dist: matplotlib>=3.8
+Requires-Dist: networkx>=3.1
+Requires-Dist: statsmodels>=0.14
+Provides-Extra: test
+Requires-Dist: pytest>=7.0; extra == "test"
+Dynamic: license-file
+
 # DESeq2 → ORA / GSEA enrichment (chicken-first, pure Python)
 
 A pipeline **and** a Streamlit app that take a DESeq2 differential-expression
@@ -15,7 +37,7 @@ human orthologs so you get the richly curated MSigDB collections.
 | Stage | Engine | Notes |
 |-------|--------|-------|
 | Load & validate | pandas | auto-detects DESeq2 columns; reports ID coverage, biotypes, NA-padj |
-| DEG selection | — | default `padj < 0.05` with no fold-change cutoff; up/down run separately; **universe = tested genes** |
+| DEG selection | — | `padj < α` & `|log2FC| > τ`; up/down run separately; **universe = tested genes** |
 | **ORA** | **g:Profiler** (`ggallus`) | native chicken GO/KEGG/Reactome/WikiPathways; **custom background** |
 | Ortholog map | g:Profiler `orth` | chicken → human, for GSEA only |
 | Ranking | — | DESeq2 **Wald `stat`** (default), `sign(FC)·-log10p`, or `log2FC`; duplicates collapsed by max magnitude |
@@ -37,16 +59,10 @@ aliases. Required (after mapping): `gene_id`, `log2FoldChange`, `pvalue`,
 automatically. `padj = NA` rows (independent filtering) are dropped from the
 ORA universe as they should be.
 
-DEG threshold defaults. The pipeline defaults to `padj < 0.05` with no
-fold-change cutoff. A fold-change cutoff is a filter, not a statistical test;
-apply it only when you have a specific biological reason. Adjust `|log2FC|` in
-the sidebar for your contrast.
-
 The bundled demo table (`sample_data/DESeq2_chicken_demo.tsv`) is a real
-DESeq2 export from GEO accession GSE230804. It compares HH stage 18 chick
-embryo hindbrain boundary cells sorted as CSPG-positive (4 biological
-replicates) versus CSPG-negative (6 biological replicates), using the
-GEO-supplied DESeq2 workbook.
+DESeq2 export generated from GEO accession GSE160169. It compares chicken
+caecum from Eimeria tenella-infected birds at 1 day post-infection against
+uninfected controls (6 samples per group) using the public raw count matrix.
 
 ---
 

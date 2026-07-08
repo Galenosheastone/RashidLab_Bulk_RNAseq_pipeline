@@ -21,6 +21,7 @@ def fetch_library(name: str, organism: str = "human") -> dict:
 
     Cached so repeated GSEA runs in a session hit the network once.
     """
+    organism = {"hsapiens": "human", "mmusculus": "mouse"}.get(organism, organism)
     lib = gp.get_library(name=name, organism=organism)
     return lib
 
@@ -62,7 +63,6 @@ def combine_libraries(names: list[str], organism: str = "human") -> dict:
         "WikiPathway_2023_Human": "WP",
         "KEGG_2021_Human": "KEGG",
         "MSigDB_Oncogenic_Signatures": "ONCO",
-        "MSigDB_Curated_Canonical_Pathways": "C2CP",
     }
     for name in names:
         tag = tags.get(name, name.split("_")[0].upper())

@@ -65,8 +65,12 @@ def run_contrast(
                 organism=organism,
                 directions=ora_directions,
             )
-        except Exception as exc:  # network / API errors kept, others survive
-            result.errors["ora"] = str(exc)
+        except (KeyError, ValueError, RuntimeError, AssertionError, TypeError,
+                OSError, ConnectionError) as exc:
+            import traceback
+
+            result.errors["ora"] = f"{type(exc).__name__}: {exc}" or repr(exc)
+            result.errors["ora_traceback"] = traceback.format_exc()
 
     # --- GSEA: ortholog -> ranked human symbols -> gseapy -----------------
     if do_gsea:
@@ -90,7 +94,11 @@ def run_contrast(
                 min_size=config.GSEA_MIN_SIZE, max_size=config.GSEA_MAX_SIZE,
                 permutations=gsea_permutations, seed=config.GSEA_SEED,
             )
-        except Exception as exc:
-            result.errors["gsea"] = str(exc)
+        except (KeyError, ValueError, RuntimeError, AssertionError, TypeError,
+                OSError, ConnectionError) as exc:
+            import traceback
+
+            result.errors["gsea"] = f"{type(exc).__name__}: {exc}" or repr(exc)
+            result.errors["gsea_traceback"] = traceback.format_exc()
 
     return result
