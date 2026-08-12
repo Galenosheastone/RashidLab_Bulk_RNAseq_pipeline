@@ -28,6 +28,7 @@ class ContrastResult:
     ora: pd.DataFrame = field(default_factory=pd.DataFrame)
     gsea: Optional[object] = None          # gsea.GSEAResult
     ranking: Optional[pd.Series] = None
+    gsea_metadata: dict = field(default_factory=dict)
     errors: dict = field(default_factory=dict)
 
 
@@ -72,33 +73,72 @@ def run_contrast(
             result.errors["ora"] = f"{type(exc).__name__}: {exc}" or repr(exc)
             result.errors["ora_traceback"] = traceback.format_exc()
 
-    # --- GSEA: ortholog -> ranked human symbols -> gseapy -----------------
     if do_gsea:
-        try:
-            gene_sets = {}
-            if gsea_libraries:
-                gene_sets.update(
-                    genesets.combine_libraries(gsea_libraries, config.ORTHOLOG_TARGET)
-                )
-            if custom_gmt:
-                gene_sets.update(custom_gmt)
-            if not gene_sets:
-                raise ValueError("No gene sets selected for GSEA.")
+        run_gsea_for_result(
+            result,
+            id_col=id_col,
+            rank_metric=rank_metric,
+            gsea_libraries=gsea_libraries,
+            custom_gmt=custom_gmt,
+            organism=organism,
+            gsea_permutations=gsea_permutations,
+        )
 
-            mapped = ortho.attach_human_symbol(df, id_col=id_col, source=organism)
-            ranking = rank.build_rank(mapped, metric=rank_metric,
-                                      key_col="human_symbol")
-            result.ranking = ranking
-            result.gsea = gsea.run_prerank(
-                ranking, gene_sets,
-                min_size=config.GSEA_MIN_SIZE, max_size=config.GSEA_MAX_SIZE,
-                permutations=gsea_permutations, seed=config.GSEA_SEED,
+    return result
+
+
+def run_gsea_for_result(
+    result: ContrastResult,
+    *,
+    id_col: str = "gene_id",
+    rank_metric: str = config.RANK_METRIC,
+    gsea_libraries: Optional[list[str]] = None,
+    custom_gmt: Optional[dict] = None,
+    organism: str = config.ORGANISM,
+    gsea_permutations: int = config.GSEA_PERMUTATIONS,
+) -> ContrastResult:
+    """Run or rerun only the GSEA stage on an existing contrast result."""
+    result.errors.pop("gsea", None)
+    result.errors.pop("gsea_traceback", None)
+    result.gsea = None
+    result.ranking = None
+    result.gsea_metadata = {}
+
+    try:
+        gene_sets = {}
+        libraries = list(gsea_libraries or [])
+        if libraries:
+            gene_sets.update(
+                genesets.combine_libraries(libraries, config.ORTHOLOG_TARGET)
             )
-        except (KeyError, ValueError, RuntimeError, AssertionError, TypeError,
-                OSError, ConnectionError) as exc:
-            import traceback
+        if custom_gmt:
+            gene_sets.update(custom_gmt)
+        if not gene_sets:
+            raise ValueError("No gene sets selected for GSEA.")
 
-            result.errors["gsea"] = f"{type(exc).__name__}: {exc}" or repr(exc)
-            result.errors["gsea_traceback"] = traceback.format_exc()
+        mapped = ortho.attach_human_symbol(result.df, id_col=id_col, source=organism)
+        ranking = rank.build_rank(mapped, metric=rank_metric, key_col="human_symbol")
+        result.ranking = ranking
+        result.gsea = gsea.run_prerank(
+            ranking, gene_sets,
+            min_size=config.GSEA_MIN_SIZE, max_size=config.GSEA_MAX_SIZE,
+            permutations=gsea_permutations, seed=config.GSEA_SEED,
+        )
+        result.gsea_metadata = {
+            "libraries": libraries,
+            "custom_gmt_terms": len(custom_gmt or {}),
+            "gene_sets_requested": len(gene_sets),
+            "id_col": id_col,
+            "rank_metric": rank_metric,
+            "organism": organism,
+            "permutations": gsea_permutations,
+            "ranking_size": len(ranking),
+        }
+    except (KeyError, ValueError, RuntimeError, AssertionError, TypeError,
+            OSError, ConnectionError) as exc:
+        import traceback
+
+        result.errors["gsea"] = f"{type(exc).__name__}: {exc}" or repr(exc)
+        result.errors["gsea_traceback"] = traceback.format_exc()
 
     return result
