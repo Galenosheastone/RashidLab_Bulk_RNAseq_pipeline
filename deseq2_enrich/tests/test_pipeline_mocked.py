@@ -69,3 +69,5 @@ def test_pipeline_end_to_end_mocked(tmp_path, toy_deseq2):
     assert len(res.ora) > 0
     assert res.gsea is not None
     assert len(res.gsea.table) == 1
+    assert res.gsea_metadata["libraries"] == ["MSigDB_Hallmark_2020"]
+    assert res.gsea_metadata["ranking_size"] == len(res.ranking)
