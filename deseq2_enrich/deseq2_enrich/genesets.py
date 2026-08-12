@@ -63,6 +63,9 @@ def combine_libraries(names: list[str], organism: str = "human") -> dict:
         "WikiPathway_2023_Human": "WP",
         "KEGG_2021_Human": "KEGG",
         "MSigDB_Oncogenic_Signatures": "ONCO",
+        "GO_Biological_Process_2026": "GO:BP",
+        "GO_Molecular_Function_2026": "GO:MF",
+        "GO_Cellular_Component_2026": "GO:CC",
     }
     for name in names:
         tag = tags.get(name, name.split("_")[0].upper())
