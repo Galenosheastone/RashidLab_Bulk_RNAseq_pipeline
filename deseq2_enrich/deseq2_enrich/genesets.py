@@ -15,7 +15,7 @@ import gseapy as gp
 from . import config
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=config.GSEA_LIBRARY_CACHE_SIZE)
 def fetch_library(name: str, organism: str = "human") -> dict:
     """Return an Enrichr-hosted library as ``{term: [genes]}``.
 
@@ -24,6 +24,14 @@ def fetch_library(name: str, organism: str = "human") -> dict:
     organism = {"hsapiens": "human", "mmusculus": "mouse"}.get(organism, organism)
     lib = gp.get_library(name=name, organism=organism)
     return lib
+
+
+def clear_cache() -> None:
+    fetch_library.cache_clear()
+
+
+def cache_info():
+    return fetch_library.cache_info()
 
 
 def load_gmt(path_or_lines) -> dict:
