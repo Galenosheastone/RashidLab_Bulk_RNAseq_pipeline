@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io as _io
 import os
+import shutil
 import sys
 import json
 import zipfile
@@ -25,10 +26,24 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PACKAGE_PARENT = os.path.join(APP_DIR, "deseq2_enrich")
 if not os.path.isdir(os.path.join(PACKAGE_PARENT, "deseq2_enrich")):
     PACKAGE_PARENT = os.path.dirname(APP_DIR)
+
+
+def _purge_project_bytecode(root: str) -> None:
+    """Avoid stale .pyc files after Streamlit Cloud redeploys."""
+    sys.dont_write_bytecode = True
+    for dirpath, dirnames, _ in os.walk(root):
+        if "__pycache__" not in dirnames:
+            continue
+        cache_dir = os.path.join(dirpath, "__pycache__")
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        dirnames.remove("__pycache__")
+
+
+_purge_project_bytecode(APP_DIR)
 sys.path.insert(0, PACKAGE_PARENT)
 
 from deseq2_enrich import config, plots, genesets  # noqa: E402
-from deseq2_enrich.pipeline import run_contrast, ContrastResult  # noqa: E402
+from deseq2_enrich.pipeline import run_contrast, run_gsea_for_result, ContrastResult  # noqa: E402
 
 st.set_page_config(page_title="DESeq2 Enrichment", layout="wide",
                    page_icon="🧬")
@@ -80,18 +95,7 @@ def sidebar() -> dict:
     ora_dirs = st.sidebar.multiselect("ORA directions", ["up", "down", "all"],
                                       default=["up", "down"])
 
-    st.sidebar.subheader("5 · GSEA gene sets (human orthologs)")
-    gsea_libs = st.sidebar.multiselect(
-        "MSigDB / pathway libraries", list(config.GSEA_LIBRARIES.keys()),
-        default=config.GSEA_DEFAULT_LIBRARIES,
-        format_func=lambda s: config.GSEA_LIBRARIES[s],
-    )
-    custom_gmt_file = st.sidebar.file_uploader(
-        "Custom .gmt (optional)", type=["gmt"],
-        help="Your curated modules (e.g. cGAS-STING, necroptosis, osteoclast).",
-    )
-
-    st.sidebar.subheader("6 · Compute")
+    st.sidebar.subheader("5 · Compute")
     quick = st.sidebar.toggle("Quick mode (fewer permutations)", value=True,
                               help="1000 → 100 permutations for a fast preview.")
     do_ora = st.sidebar.checkbox("Run ORA", value=True)
@@ -107,7 +111,8 @@ def sidebar() -> dict:
     return dict(
         use_sample=use_sample, uploads=uploads, padj=padj, lfc=lfc, id_col=id_col,
         rank_metric=rank_metric, ora_sources=ora_sources, ora_dirs=tuple(ora_dirs),
-        gsea_libs=gsea_libs, custom_gmt_file=custom_gmt_file,
+        gsea_libs=st.session_state.get("gsea_libs", config.GSEA_DEFAULT_LIBRARIES),
+        custom_gmt_file=None,
         permutations=100 if quick else config.GSEA_PERMUTATIONS,
         do_ora=do_ora, do_gsea=do_gsea, run=run,
     )
@@ -228,6 +233,97 @@ def _dataframe(df: pd.DataFrame, *, key: str | None = None,
         st.dataframe(df, width="stretch", **kwargs)
     except TypeError:
         st.dataframe(df, use_container_width=True, **kwargs)
+
+
+def _gsea_library_options() -> list[str]:
+    ordered = []
+    for names in config.GSEA_LIBRARY_GROUPS.values():
+        ordered.extend(name for name in names if name in config.GSEA_LIBRARIES)
+    ordered.extend(name for name in config.GSEA_LIBRARIES if name not in ordered)
+    return ordered
+
+
+def _format_gsea_library(name: str) -> str:
+    label = config.GSEA_LIBRARIES.get(name, name)
+    for group, names in config.GSEA_LIBRARY_GROUPS.items():
+        if name in names:
+            return f"{group}: {label}"
+    return label
+
+
+def _parse_custom_gmt_upload(upload) -> tuple[dict | None, str | None]:
+    if upload is None:
+        return None, None
+    lines = upload.getvalue().decode("utf-8", "replace").splitlines()
+    custom = genesets.load_gmt(lines)
+    return custom, upload.name
+
+
+def _gsea_term_label(row: pd.Series) -> str:
+    collection = str(row.get("collection", "GSEA"))
+    term = str(row.get("term_short", row.get("term", "")))
+    nes = row.get("NES", float("nan"))
+    fdr = row.get("fdr", float("nan"))
+    return f"{collection}: {term}  |  NES {nes:.2f}, FDR {fdr:.2g}"
+
+
+def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
+    st.markdown("**Gene-set collections**")
+    default_libs = res.gsea_metadata.get(
+        "libraries",
+        params.get("gsea_libs", config.GSEA_DEFAULT_LIBRARIES),
+    )
+    selected_libs = st.multiselect(
+        "Collections for GSEA",
+        _gsea_library_options(),
+        default=[lib for lib in default_libs if lib in config.GSEA_LIBRARIES],
+        format_func=_format_gsea_library,
+        key=f"gsea_libs_{res.name}",
+        help="GO selections here are human-symbol Enrichr libraries used after chicken-to-human ortholog mapping.",
+    )
+    custom_gmt_file = st.file_uploader(
+        "Custom GMT gene sets",
+        type=["gmt"],
+        key=f"gsea_custom_gmt_{res.name}",
+        help="Optional pathway/module file. Terms are combined with selected collections.",
+    )
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        update = st.button("Update GSEA", type="primary",
+                           key=f"gsea_update_{res.name}")
+    with c2:
+        if selected_libs:
+            labels = [config.GSEA_LIBRARIES.get(lib, lib) for lib in selected_libs]
+            st.caption("Selected: " + ", ".join(labels))
+        else:
+            st.caption("Selected: custom GMT only")
+    if not update:
+        return
+
+    custom_gmt, custom_name = _parse_custom_gmt_upload(custom_gmt_file)
+    if not selected_libs and not custom_gmt:
+        st.warning("Select at least one collection or upload a GMT file.")
+        return
+
+    with st.spinner("Updating GSEA for this contrast..."):
+        run_gsea_for_result(
+            res,
+            id_col=params.get("id_col", "gene_id"),
+            rank_metric=params.get("rank_metric", config.RANK_METRIC),
+            gsea_libraries=selected_libs,
+            custom_gmt=custom_gmt,
+            organism=config.ORGANISM,
+            gsea_permutations=params.get("permutations", config.GSEA_PERMUTATIONS),
+        )
+    st.session_state["gsea_libs"] = selected_libs
+    params["gsea_libs"] = selected_libs
+    params["gsea_custom_gmt_name"] = custom_name
+    params["do_gsea"] = True
+    st.session_state["params"] = params
+    if "gsea" in res.errors:
+        st.error(f"GSEA failed: {res.errors['gsea']}")
+    else:
+        st.success("GSEA updated for this contrast.")
 
 
 # --------------------------------------------------------------------------
@@ -507,24 +603,127 @@ def tab_ora(res: ContrastResult):
 
 def tab_gsea(res: ContrastResult):
     st.subheader(f"Gene-set enrichment (GSEA) — {res.name}")
+    params = st.session_state.get("params", {})
+    _render_gsea_controls(res, params)
+    st.divider()
+
+    if params.get("permutations", 0) < 1000:
+        st.warning(
+            f"GSEA was run with {params.get('permutations')} permutations "
+            "(Quick mode). Q-values are noisy. Rerun with full 1000 "
+            "permutations before reporting.",
+            icon="⚠️",
+        )
     if "gsea" in res.errors:
         st.error(f"GSEA failed: {res.errors['gsea']}")
+        tb = res.errors.get("gsea_traceback")
+        if tb:
+            with st.expander("Show error details", expanded=False):
+                st.code(tb, language="text")
         return
     if res.gsea is None or res.gsea.table.empty:
-        st.info("No GSEA results. Select at least one library or upload a GMT.")
+        st.info("No GSEA results yet. Select collections above and click Update GSEA.")
         return
     table = res.gsea.table
+
+    with st.expander("Reading this table", expanded=False):
+        st.markdown(
+            """
+            `NES` is the normalized enrichment score. Positive values mean the
+            gene set is concentrated near the positive end of the ranked gene
+            list; negative values mean it is concentrated near the negative end.
+            `FDR q-value` is the multiple-testing adjusted GSEA significance
+            estimate. Leading-edge genes are the genes that drive the selected
+            enrichment signal.
+            """
+        )
+
+    metadata = res.gsea_metadata or {}
+    fdr_default = 0.25
+    controls = st.columns([1, 1, 1.2, 1.4])
+    with controls[0]:
+        fdr_cutoff = st.slider(
+            "FDR cutoff", 0.0, 1.0, fdr_default, 0.01,
+            key=f"gsea_fdr_{res.name}",
+        )
+    with controls[1]:
+        direction_choice = st.radio(
+            "Direction", ["Both", "Positive NES", "Negative NES"],
+            horizontal=False, key=f"gsea_direction_{res.name}",
+        )
+    with controls[2]:
+        collections = sorted(table["collection"].dropna().astype(str).unique())
+        collection_sel = st.multiselect(
+            "Collections", collections, default=collections,
+            key=f"gsea_collection_filter_{res.name}",
+        )
+    with controls[3]:
+        term_query = st.text_input("Search terms", key=f"gsea_search_{res.name}")
+
+    filtered = table.copy()
+    if direction_choice == "Positive NES":
+        filtered = filtered[filtered["NES"] >= 0]
+    elif direction_choice == "Negative NES":
+        filtered = filtered[filtered["NES"] < 0]
+    if collection_sel:
+        filtered = filtered[filtered["collection"].astype(str).isin(collection_sel)]
+    if term_query:
+        q = term_query.strip().lower()
+        term_cols = [c for c in ("term", "term_short", "collection") if c in filtered]
+        mask = pd.Series(False, index=filtered.index)
+        for col in term_cols:
+            mask |= filtered[col].astype(str).str.lower().str.contains(q, na=False)
+        filtered = filtered[mask]
+
+    sig = table[pd.to_numeric(table["fdr"], errors="coerce") <= fdr_cutoff]
+    sig_pos = int((sig["NES"] >= 0).sum())
+    sig_neg = int((sig["NES"] < 0).sum())
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Ranked genes used", f"{metadata.get('ranking_size', len(res.gsea.ranking)):,}")
+    m2.metric("Gene sets tested", f"{len(table):,}")
+    m3.metric(f"FDR <= {fdr_cutoff:.2f}", f"{len(sig):,}")
+    m4.metric("Significant direction", f"{sig_pos} pos / {sig_neg} neg")
+
+    selected_labels = [
+        config.GSEA_LIBRARIES.get(lib, lib)
+        for lib in metadata.get("libraries", [])
+    ]
+    if metadata.get("custom_gmt_terms"):
+        selected_labels.append(f"Custom GMT ({metadata['custom_gmt_terms']} terms)")
+    if selected_labels:
+        st.caption("Computed with: " + ", ".join(selected_labels))
+
+    if filtered.empty:
+        st.info("No GSEA terms match the current filters.")
+        _dataframe(table, key=f"gsea_table_{res.name}", height=320)
+        return
+
     top_n = st.slider("Top terms by |NES|", 5, 40, 20, key=f"gsea_n_{res.name}")
-    _plotly(plots.gsea_bar(table, top_n), key=f"gsea_bar_{res.name}")
+    _plotly(plots.gsea_bar(filtered, top_n, fdr_alpha=fdr_cutoff),
+            key=f"gsea_bar_{res.name}")
 
     st.markdown("**Running-enrichment plot**")
-    term = st.selectbox("Term", table["term"].tolist(), key=f"gsea_term_{res.name}")
+    term_rows = filtered.reset_index(drop=True)
+    term = st.selectbox(
+        "Term",
+        term_rows["term"].tolist(),
+        format_func=lambda t: _gsea_term_label(
+            term_rows.loc[term_rows["term"].eq(t)].iloc[0]
+        ),
+        key=f"gsea_term_{res.name}",
+    )
     _plotly(plots.gsea_running_plot(res.gsea, term),
             key=f"gsea_running_{res.name}")
 
     st.markdown("**Leading-edge genes**")
-    default_terms = table.head(5)["term"].tolist()
-    sel = st.multiselect("Terms for heatmap", table["term"].tolist(),
+    selected_raw = res.gsea.raw.results[term]
+    leading = [
+        g for g in str(selected_raw.get("lead_genes", "")).split(";") if g
+    ]
+    if leading:
+        st.caption(f"Top leading-edge genes for selected term: {', '.join(leading[:20])}")
+    default_terms = filtered.head(5)["term"].tolist()
+    sel = st.multiselect("Terms for heatmap", filtered["term"].tolist(),
                          default=default_terms, key=f"gsea_le_{res.name}")
     if sel:
         _plotly(plots.leading_edge_heatmap(res.gsea, sel),
@@ -533,15 +732,22 @@ def tab_gsea(res: ContrastResult):
     st.markdown("**Enrichment map**")
     jac = st.slider("Jaccard edge threshold", 0.05, 0.6, 0.25, 0.05,
                     key=f"gsea_jac_{res.name}")
-    net_terms = table.head(40)["term"].tolist()
+    net_terms = filtered.head(40)["term"].tolist()
     term_map = {t: res.gsea.raw.results[t]["lead_genes"].split(";") for t in net_terms}
     scores = dict(zip(table["term"], table["NES"]))
     _plotly(plots.enrichment_network(term_map, scores, jac),
             key=f"gsea_network_{res.name}")
 
-    _dataframe(table, key=f"gsea_table_{res.name}", height=320)
-    st.download_button("⬇ GSEA table (CSV)", table.to_csv(index=False),
+    _dataframe(filtered, key=f"gsea_table_{res.name}", height=320)
+    st.download_button("⬇ Filtered GSEA table (CSV)", filtered.to_csv(index=False),
                        file_name=f"{res.name}_GSEA.csv", mime="text/csv")
+    if leading:
+        st.download_button(
+            "⬇ Leading-edge genes (CSV)",
+            pd.DataFrame({"gene": leading}).to_csv(index=False),
+            file_name=f"{res.name}_GSEA_leading_edge.csv",
+            mime="text/csv",
+        )
 
 
 def tab_compare(results: list[ContrastResult]):
@@ -614,8 +820,8 @@ def main():
             "* **ORA** runs on native chicken annotations via g:Profiler "
             "(GO / KEGG / Reactome / WikiPathways) with your tested genes as background.\n"
             "* **GSEA** ranks by the DESeq2 Wald statistic, maps chicken → human "
-            "orthologs, and scores against MSigDB / Reactome collections.\n"
-            "* Add a **custom .gmt** to score your own curated pathway modules."
+            "orthologs, and scores against pathway or GO collections chosen in the GSEA tab.\n"
+            "* Add a **custom .gmt** in the GSEA tab to score your own curated pathway modules."
         )
         return
 
