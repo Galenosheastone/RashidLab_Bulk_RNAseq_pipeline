@@ -31,7 +31,7 @@ def _client() -> "GProfiler":
     return GProfiler(return_dataframe=True, user_agent="deseq2_enrich")
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=config.ORTHOLOG_CACHE_SIZE)
 def _orth_cached(genes_key: tuple[str, ...], source: str, target: str) -> pd.DataFrame:
     gp = _client()
     res = gp.orth(
@@ -40,6 +40,14 @@ def _orth_cached(genes_key: tuple[str, ...], source: str, target: str) -> pd.Dat
         target=target,
     )
     return res
+
+
+def clear_cache() -> None:
+    _orth_cached.cache_clear()
+
+
+def cache_info():
+    return _orth_cached.cache_info()
 
 
 def map_to_human(
