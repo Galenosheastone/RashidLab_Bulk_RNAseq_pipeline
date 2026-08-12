@@ -31,7 +31,7 @@ def _client() -> "GProfiler":
     return GProfiler(return_dataframe=True, user_agent="deseq2_enrich")
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=config.ORA_CACHE_SIZE)
 def _profile_cached(
     query_key: tuple[str, ...],
     background_key: tuple[str, ...],
@@ -51,6 +51,14 @@ def _profile_cached(
         kwargs["background"] = list(background_key)
         kwargs["domain_scope"] = "custom"
     return gp.profile(**kwargs)
+
+
+def clear_cache() -> None:
+    _profile_cached.cache_clear()
+
+
+def cache_info():
+    return _profile_cached.cache_info()
 
 
 def run_ora(
