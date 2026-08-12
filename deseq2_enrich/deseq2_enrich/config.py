@@ -44,8 +44,25 @@ GSEA_LIBRARIES = {
     "WikiPathway_2023_Human": "WikiPathways (Human 2023)",
     "MSigDB_Oncogenic_Signatures": "MSigDB Oncogenic",
     "KEGG_2021_Human": "KEGG (Human 2021)",
+    "GO_Biological_Process_2026": "GO:BP Biological Process (2026)",
+    "GO_Molecular_Function_2026": "GO:MF Molecular Function (2026)",
+    "GO_Cellular_Component_2026": "GO:CC Cellular Component (2026)",
 }
 GSEA_DEFAULT_LIBRARIES = ["MSigDB_Hallmark_2020", "Reactome_2022"]
+GSEA_LIBRARY_GROUPS = {
+    "Curated pathways": [
+        "MSigDB_Hallmark_2020",
+        "Reactome_2022",
+        "KEGG_2021_Human",
+        "WikiPathway_2023_Human",
+        "MSigDB_Oncogenic_Signatures",
+    ],
+    "Gene Ontology": [
+        "GO_Biological_Process_2026",
+        "GO_Molecular_Function_2026",
+        "GO_Cellular_Component_2026",
+    ],
+}
 
 # --- GSEA parameters ------------------------------------------------------
 GSEA_MIN_SIZE = 15
