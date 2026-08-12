@@ -69,6 +69,10 @@ GSEA_MIN_SIZE = 15
 GSEA_MAX_SIZE = 500
 GSEA_PERMUTATIONS = 1000
 GSEA_SEED = 42
+GSEA_LIBRARY_CACHE_SIZE = 4
+ORTHOLOG_CACHE_SIZE = 2
+ORA_CACHE_SIZE = 8
+GSEA_MAX_RUNNING_PLOT_TERMS = 250
 
 # --- Significance display -------------------------------------------------
 SIG_ALPHA = 0.05  # adj-p / FDR line used in plots and "top term" tables
