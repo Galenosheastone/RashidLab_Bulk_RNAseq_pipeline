@@ -281,11 +281,52 @@ def _plotly(fig, key: str):
         st.plotly_chart(fig, use_container_width=True, key=key)
 
 
+# Significance columns routinely hold values far below anything a plain float
+# rendering can show: a padj of 3.9e-124 renders as 0.000…0039, which is
+# unreadable and impossible to compare at a glance. Force scientific notation.
+_SCI_COLUMNS = frozenset({
+    "pvalue", "padj", "pval", "p_value", "fdr", "fwer",
+    "qvalue", "q_value", "adj_pvalue", "mapping_rate",
+})
+# Effect sizes and scores, where a few decimals is plenty.
+_FIXED_COLUMNS = {
+    "log2FoldChange": "%.3f", "log2FC": "%.3f", "stat": "%.3f",
+    "ES": "%.3f", "NES": "%.3f", "neg_log10_padj": "%.2f",
+    "baseMean": "%.1f", "tag_pct": "%.3f", "gene_pct": "%.3f",
+}
+
+
+def _numeric_column_config(df: pd.DataFrame) -> dict:
+    """Readable numeric formats, applied only to numeric columns present."""
+    cfg = {}
+    for col in df.columns:
+        if not isinstance(col, str):
+            continue
+        try:
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                continue
+        except Exception:
+            continue
+        if col in _SCI_COLUMNS:
+            cfg[col] = st.column_config.NumberColumn(col, format="%.3e")
+        elif col in _FIXED_COLUMNS:
+            cfg[col] = st.column_config.NumberColumn(col, format=_FIXED_COLUMNS[col])
+    return cfg
+
+
 def _dataframe(df: pd.DataFrame, *, key: str | None = None,
                height: int | None = None):
     kwargs = {"key": key} if key else {}
     if height is not None:
         kwargs["height"] = height
+    # Older Streamlit builds lack column_config; degrade to the raw render
+    # rather than losing the table entirely.
+    try:
+        cfg = _numeric_column_config(df)
+        if cfg:
+            kwargs["column_config"] = cfg
+    except Exception:
+        pass
     try:
         st.dataframe(df, width="stretch", **kwargs)
     except TypeError:
