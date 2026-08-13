@@ -125,7 +125,12 @@ GSEA_DEFAULT_MODE = "auto"
 CHICKEN_GMT_CACHE_SIZE = 1  # a parsed GMT is large; hold one at a time
 
 # --- GSEA parameters ------------------------------------------------------
-GSEA_MIN_SIZE = 15
+# gseapy filters each set to min_size <= |set intersect ranked_list| <= max_size
+# AFTER intersecting with the ranked list, then silently drops the rest. 15 wipes
+# out otherwise-valid small pathways once the list has shrunk, so chicken runs
+# start at 10. Both bounds are surfaced in the UI rather than left as silent
+# constants -- how many sets actually got scored is part of reading the result.
+GSEA_MIN_SIZE = 10
 GSEA_MAX_SIZE = 500
 GSEA_PERMUTATIONS = 1000
 GSEA_SEED = 42

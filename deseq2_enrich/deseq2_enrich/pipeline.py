@@ -51,6 +51,8 @@ def run_contrast(
     strict_one_to_one: bool = False,
     gsea_mode: str = "ortholog",
     chicken_gmt_keying: str = config.CHICKEN_GMT_KEYING,
+    min_size: int = config.GSEA_MIN_SIZE,
+    max_size: int = config.GSEA_MAX_SIZE,
 ) -> ContrastResult:
     df, report = io.load_deseq2(path_or_buffer, contrast_name=contrast_name)
     if report.missing_required:
@@ -88,6 +90,8 @@ def run_contrast(
             strict_one_to_one=strict_one_to_one,
             gsea_mode=gsea_mode,
             chicken_gmt_keying=chicken_gmt_keying,
+            min_size=min_size,
+            max_size=max_size,
         )
 
     return result
@@ -162,6 +166,8 @@ def run_gsea_for_result(
     strict_one_to_one: bool = False,
     gsea_mode: str = "ortholog",
     chicken_gmt_keying: str = config.CHICKEN_GMT_KEYING,
+    min_size: int = config.GSEA_MIN_SIZE,
+    max_size: int = config.GSEA_MAX_SIZE,
 ) -> ContrastResult:
     """Run or rerun only the GSEA stage on an existing contrast result.
 
@@ -185,6 +191,7 @@ def run_gsea_for_result(
 
         routes: dict[str, gsea.GSEAResult] = {}
         tables: list[pd.DataFrame] = []
+        requested: dict[str, int] = {}
 
         # --- Native chicken route: no ortholog step, no dropout bias -------
         if native_sources or (gsea_mode == "native_chicken" and custom_gmt):
@@ -202,9 +209,10 @@ def run_gsea_for_result(
                 native_rank = rank.build_rank(
                     result.df, metric=rank_metric, key_col=key_col
                 )
+                requested["native"] = len(native_sets)
                 routes["native"] = gsea.run_prerank(
                     native_rank, native_sets,
-                    min_size=config.GSEA_MIN_SIZE, max_size=config.GSEA_MAX_SIZE,
+                    min_size=min_size, max_size=max_size,
                     permutations=gsea_permutations, seed=config.GSEA_SEED,
                 )
                 result.gsea_metadata["native_key_col"] = key_col
@@ -248,9 +256,10 @@ def run_gsea_for_result(
                 ortho_rank = rank.build_rank(
                     mapped, metric=rank_metric, key_col="human_symbol"
                 )
+                requested["ortholog"] = len(ortho_sets)
                 routes["ortholog"] = gsea.run_prerank(
                     ortho_rank, ortho_sets,
-                    min_size=config.GSEA_MIN_SIZE, max_size=config.GSEA_MAX_SIZE,
+                    min_size=min_size, max_size=max_size,
                     permutations=gsea_permutations, seed=config.GSEA_SEED,
                 )
                 result.gsea_metadata["ortholog_ranking_size"] = len(ortho_rank)
@@ -291,6 +300,17 @@ def run_gsea_for_result(
             "permutations": gsea_permutations,
             "ranking_size": len(result.ranking),
             "strict_one_to_one": strict_one_to_one,
+            # gseapy drops any set whose intersection with the ranked list
+            # falls outside [min_size, max_size], silently. Reporting requested
+            # vs scored is the only way to see how much was actually tested.
+            "gene_sets_requested": sum(requested.values()),
+            "gene_sets_scored": int(len(result.gsea.table)),
+            "gene_sets_requested_by_route": dict(requested),
+            "gene_sets_scored_by_route": {
+                name: int(len(r.table)) for name, r in routes.items()
+            },
+            "min_size": min_size,
+            "max_size": max_size,
             "gsea_mode": gsea_mode,
             "gsea_routes": sorted(routes),
             "chicken_gmt_keying": chicken_gmt_keying,

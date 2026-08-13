@@ -383,6 +383,24 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
             "Applies to the ortholog route only."
         ),
     )
+    s1, s2 = st.columns(2)
+    with s1:
+        min_size = st.number_input(
+            "Min gene-set size", min_value=2, max_value=100,
+            value=int(res.gsea_metadata.get("min_size", config.GSEA_MIN_SIZE)),
+            step=1, key=f"gsea_min_size_{res.name}",
+            help=(
+                "Sets are filtered AFTER intersecting with your ranked list, so "
+                "a high floor silently discards valid small pathways. Sets "
+                "outside these bounds are dropped without warning by gseapy."
+            ),
+        )
+    with s2:
+        max_size = st.number_input(
+            "Max gene-set size", min_value=50, max_value=5000,
+            value=int(res.gsea_metadata.get("max_size", config.GSEA_MAX_SIZE)),
+            step=50, key=f"gsea_max_size_{res.name}",
+        )
     c1, c2 = st.columns([1, 3])
     with c1:
         update = st.button("Update GSEA", type="primary",
@@ -414,6 +432,8 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
             gsea_permutations=params.get("permutations", config.GSEA_PERMUTATIONS),
             gsea_mode=mode,
             strict_one_to_one=strict,
+            min_size=int(min_size),
+            max_size=int(max_size),
         )
     gc.collect()
     st.session_state["gsea_libs"] = selected_libs
@@ -801,7 +821,18 @@ def tab_gsea(res: ContrastResult):
     sig_neg = int((sig["NES"] < 0).sum())
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Ranked genes used", f"{metadata.get('ranking_size', len(res.gsea.ranking)):,}")
-    m2.metric("Gene sets tested", f"{len(table):,}")
+    requested = int(metadata.get("gene_sets_requested", 0) or 0)
+    dropped = max(requested - len(table), 0)
+    m2.metric(
+        "Gene sets scored", f"{len(table):,}",
+        delta=f"-{dropped:,} dropped" if dropped else None,
+        delta_color="off",
+        help=(
+            f"{requested:,} sets requested; {dropped:,} fell outside the "
+            f"size bounds ({metadata.get('min_size')}–{metadata.get('max_size')} "
+            "genes) after intersecting with the ranked list and were not tested."
+        ) if requested else None,
+    )
     m3.metric(f"FDR <= {fdr_cutoff:.2f}", f"{len(sig):,}")
     m4.metric("Significant direction", f"{sig_pos} pos / {sig_neg} neg")
 

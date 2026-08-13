@@ -225,3 +225,39 @@ def test_native_gmt_failure_is_reported_not_swallowed(tmp_path, toy_deseq2):
 
     assert res.gsea is None
     assert "Could not download" in res.errors["gsea"]
+
+
+def test_reports_scored_vs_requested_and_size_filters(tmp_path, toy_deseq2):
+    """gseapy silently drops out-of-size sets; the counts must be visible."""
+    csv_path = tmp_path / "toy.tsv"
+    toy_deseq2.to_csv(csv_path, sep="\t", index=False)
+
+    def _drop_one(rnk, gene_sets, **kwargs):
+        # Score only the first set, as gseapy would when the rest fall
+        # outside [min_size, max_size] after intersection.
+        scored = list(gene_sets)[:1]
+        pre = MagicMock()
+        pre.res2d = pd.DataFrame({
+            "Term": scored, "ES": [0.4], "NES": [1.5], "NOM p-val": [0.01],
+            "FDR q-val": [0.02], "FWER p-val": [0.01], "Lead_genes": ["gene_1"],
+        })
+        pre.results = {scored[0]: {"nes": 1.5, "fdr": 0.02, "RES": [0.0, 0.3],
+                                   "hits": [1], "lead_genes": "gene_1"}}
+        return pre
+
+    with patch("deseq2_enrich.genesets.fetch_chicken_gmt",
+               return_value=dict(_FAKE_CHICKEN_GMT)), \
+         patch("deseq2_enrich.gsea.gp.prerank", side_effect=_drop_one):
+        res = run_contrast(
+            str(csv_path), contrast_name="toy", do_ora=False,
+            gsea_libraries=["Reactome_2022"], gsea_mode="native_chicken",
+            gsea_permutations=10, min_size=7, max_size=333,
+        )
+
+    md = res.gsea_metadata
+    assert md["gene_sets_requested"] == len(_FAKE_CHICKEN_GMT)
+    assert md["gene_sets_scored"] == 1
+    assert md["gene_sets_scored"] < md["gene_sets_requested"]
+    # The bounds actually used are recorded, not just the config defaults.
+    assert (md["min_size"], md["max_size"]) == (7, 333)
+    assert md["gene_sets_scored_by_route"] == {"native": 1}
