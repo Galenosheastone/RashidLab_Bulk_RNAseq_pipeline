@@ -124,3 +124,19 @@ def test_run_prerank_real_smoke():
     top = next(v for k, v in nes.items() if k.endswith("TOP"))
     bot = next(v for k, v in nes.items() if k.endswith("BOTTOM"))
     assert top > 0 > bot
+
+
+def test_direction_handles_na_and_zero_nes():
+    """NaN NES must not be labelled 'down' (np.where compared NaN as False)."""
+    res2d = pd.DataFrame({
+        "Term": ["A | pos", "B | neg", "C | nan", "D | zero"],
+        "NES": [1.8, -1.4, np.nan, 0.0],
+        "NOM p-val": [0.01, 0.02, 0.03, 0.04],
+        "FDR q-val": [0.05, 0.06, 0.07, 0.08],
+    })
+    tidy = gsea._tidy(res2d, n_perm=1000).set_index("term")
+    assert tidy.loc["A | pos", "direction"] == "up"
+    assert tidy.loc["B | neg", "direction"] == "down"
+    # Neither of these is a down-regulated set.
+    assert tidy.loc["C | nan", "direction"] == "ns"
+    assert tidy.loc["D | zero", "direction"] == "ns"

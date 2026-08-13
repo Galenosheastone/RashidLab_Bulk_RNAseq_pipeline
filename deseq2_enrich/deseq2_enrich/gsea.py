@@ -232,6 +232,12 @@ def _tidy(res2d: pd.DataFrame, n_perm: int = config.GSEA_PERMUTATIONS) -> pd.Dat
             if col in df.columns:
                 df[col] = df[col].mask(df[col] < floor, floor)
 
-    df["direction"] = np.where(df.get("NES", 0) >= 0, "up", "down")
+    # np.where(NES >= 0, "up", "down") labelled a NaN NES as "down", because
+    # any comparison with NaN is False. gseapy returns NaN NES for sets whose
+    # null collapsed, so those were being reported as down-regulated. Select
+    # explicitly and give the undecidable case its own label.
+    nes = pd.to_numeric(df.get("NES"), errors="coerce") if "NES" in df.columns \
+        else pd.Series(np.nan, index=df.index)
+    df["direction"] = np.select([nes > 0, nes < 0], ["up", "down"], default="ns")
     sort_key = "fdr" if "fdr" in df.columns else "pval"
     return df.sort_values(sort_key).reset_index(drop=True)

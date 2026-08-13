@@ -23,6 +23,7 @@ from functools import lru_cache
 import pandas as pd
 
 from . import config
+from .netutil import retry_call
 
 try:
     from gprofiler import GProfiler
@@ -41,12 +42,14 @@ def _client() -> "GProfiler":
 @lru_cache(maxsize=config.ORTHOLOG_CACHE_SIZE)
 def _orth_cached(genes_key: tuple[str, ...], source: str, target: str) -> pd.DataFrame:
     gp = _client()
-    res = gp.orth(
+    # One retry: g:Profiler occasionally 5xx's under load, and re-querying is
+    # cheaper than losing the mapping for the whole contrast.
+    return retry_call(
+        gp.orth,
         organism=source,
         query=list(genes_key),
         target=target,
     )
-    return res
 
 
 def clear_cache() -> None:

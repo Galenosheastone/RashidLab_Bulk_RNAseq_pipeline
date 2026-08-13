@@ -15,6 +15,7 @@ from functools import lru_cache
 import gseapy as gp
 
 from . import config
+from .netutil import retry_call
 
 # g:Profiler term-id prefixes -> source tag.
 _GP_SOURCE_PREFIX = {"GO:": "GO", "KEGG:": "KEGG", "REAC:": "REAC", "WP:": "WP"}
@@ -30,8 +31,8 @@ def fetch_library(name: str, organism: str = "human") -> dict:
     Cached so repeated GSEA runs in a session hit the network once.
     """
     organism = {"hsapiens": "human", "mmusculus": "mouse"}.get(organism, organism)
-    lib = gp.get_library(name=name, organism=organism)
-    return lib
+    # One retry: an Enrichr blip should not lose a whole GSEA stage.
+    return retry_call(gp.get_library, name=name, organism=organism)
 
 
 @lru_cache(maxsize=config.CHICKEN_GMT_CACHE_SIZE)
@@ -62,9 +63,12 @@ def fetch_chicken_gmt(
     url = config.GPROFILER_GMT_URLS[keying]
     wanted = set(sources or ())
 
-    try:
+    def _download() -> bytes:
         with urllib.request.urlopen(url, timeout=60) as fh:
-            payload = fh.read()
+            return fh.read()
+
+    try:
+        payload = retry_call(_download)
     except Exception as exc:  # network, DNS, TLS, HTTP error
         raise RuntimeError(
             f"Could not download the native chicken gene sets from {url} "

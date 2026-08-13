@@ -3,7 +3,13 @@
 ``run_contrast`` executes the whole flow for one DESeq2 table:
 
     load -> DEG selection -> ORA (native chicken, g:Profiler)
-         -> ortholog map -> ranked list -> GSEA (MSigDB via gseapy)
+         -> ranked list -> GSEA (native chicken gene sets via gseapy)
+
+GSEA routing is decided by ``gsea_mode``: under ``auto`` the GO/Reactome/
+WikiPathways selections are scored against native chicken gene sets with no
+ortholog step, and only the human-only collections (Hallmark, Oncogenic) take
+the chicken -> human ortholog detour. Those two routes are run as separate
+preranks and their FDRs are never pooled.
 
 Each stage is optional and independently catchable so a network hiccup in one
 service does not lose the others. The returned bundle is plain data
@@ -16,7 +22,7 @@ from typing import Optional
 
 import pandas as pd
 
-from . import config, io, degs, rank, ortho, ora, genesets, gsea
+from . import config, io, degs, rank, ortho, ora, genesets, gsea, netutil
 
 
 @dataclass
@@ -315,6 +321,11 @@ def run_gsea_for_result(
             "gsea_routes": sorted(routes),
             "chicken_gmt_keying": chicken_gmt_keying,
             "fdr_per_route": len(routes) > 1,
+            # Provenance: Enrichr libraries update in place and the
+            # GO_*_2026 names will drift, so the backend versions and the
+            # fetch date are what make a reported figure reproducible.
+            "run_utc": netutil.utc_now_iso(),
+            **{f"{k}_version": v for k, v in netutil.package_versions().items()},
         })
     except (KeyError, ValueError, RuntimeError, AssertionError, TypeError,
             OSError, ConnectionError) as exc:
