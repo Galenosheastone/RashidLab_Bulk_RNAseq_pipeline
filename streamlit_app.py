@@ -663,6 +663,23 @@ def tab_ora(res: ContrastResult):
                        file_name=f"{res.name}_ORA_filtered.csv", mime="text/csv")
 
 
+def _render_ortholog_report(metadata: dict) -> None:
+    """Surface how much of the chicken list actually reached human GSEA.
+
+    Pre-ranked GSEA treats the ranked list as its universe, so the mapping
+    rate is part of interpreting the result -- it belongs next to the table,
+    not buried in a log.
+    """
+    report = metadata.get("ortholog_report")
+    if not report:
+        return
+    rate = metadata.get("mapping_rate")
+    if rate is not None and rate < config.ORTHO_MIN_MAPPING_RATE:
+        st.warning(report, icon="⚠️")
+    else:
+        st.caption(f"🧬 {report}")
+
+
 def tab_gsea(res: ContrastResult):
     st.subheader(f"Gene-set enrichment (GSEA) — {res.name}")
     params = st.session_state.get("params", {})
@@ -678,6 +695,9 @@ def tab_gsea(res: ContrastResult):
         )
     if "gsea" in res.errors:
         st.error(f"GSEA failed: {res.errors['gsea']}")
+        # A sparse-mapping abort is the most common failure; show the report
+        # that explains it rather than making the user read the traceback.
+        _render_ortholog_report(res.gsea_metadata or {})
         tb = res.errors.get("gsea_traceback")
         if tb:
             with st.expander("Show error details", expanded=False):
@@ -745,6 +765,7 @@ def tab_gsea(res: ContrastResult):
     m2.metric("Gene sets tested", f"{len(table):,}")
     m3.metric(f"FDR <= {fdr_cutoff:.2f}", f"{len(sig):,}")
     m4.metric("Significant direction", f"{sig_pos} pos / {sig_neg} neg")
+    _render_ortholog_report(metadata)
 
     selected_labels = [
         config.GSEA_LIBRARIES.get(lib, lib)

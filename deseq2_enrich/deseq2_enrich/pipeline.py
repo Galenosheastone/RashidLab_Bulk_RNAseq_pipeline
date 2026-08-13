@@ -48,6 +48,7 @@ def run_contrast(
     do_ora: bool = True,
     do_gsea: bool = True,
     gsea_permutations: int = config.GSEA_PERMUTATIONS,
+    strict_one_to_one: bool = False,
 ) -> ContrastResult:
     df, report = io.load_deseq2(path_or_buffer, contrast_name=contrast_name)
     if report.missing_required:
@@ -82,6 +83,7 @@ def run_contrast(
             custom_gmt=custom_gmt,
             organism=organism,
             gsea_permutations=gsea_permutations,
+            strict_one_to_one=strict_one_to_one,
         )
 
     return result
@@ -96,8 +98,14 @@ def run_gsea_for_result(
     custom_gmt: Optional[dict] = None,
     organism: str = config.ORGANISM,
     gsea_permutations: int = config.GSEA_PERMUTATIONS,
+    strict_one_to_one: bool = False,
 ) -> ContrastResult:
-    """Run or rerun only the GSEA stage on an existing contrast result."""
+    """Run or rerun only the GSEA stage on an existing contrast result.
+
+    ``strict_one_to_one`` keeps only unambiguous chicken<->human ortholog
+    pairs. It defaults to False to preserve existing behaviour for
+    programmatic callers; the app exposes it as a toggle.
+    """
     result.errors.pop("gsea", None)
     result.errors.pop("gsea_traceback", None)
     result.gsea = None
@@ -116,9 +124,28 @@ def run_gsea_for_result(
         if not gene_sets:
             raise ValueError("No gene sets selected for GSEA.")
 
-        mapped, _ortho_report = ortho.attach_human_symbol(
-            result.df, id_col=id_col, source=organism
+        mapped, ortho_report = ortho.attach_human_symbol(
+            result.df,
+            id_col=id_col,
+            source=organism,
+            strict_one_to_one=strict_one_to_one,
         )
+        result.gsea_metadata["ortholog_report"] = ortho_report.as_text()
+        result.gsea_metadata["mapping_rate"] = round(ortho_report.mapping_rate, 3)
+
+        # A pre-ranked GSEA takes the ranked list as its universe. If most of
+        # the chicken genes dropped out, the null is computed on a biased
+        # remnant and the NES/FDR are not interpretable -- fail loudly rather
+        # than hand back confident-looking numbers.
+        if (ortho_report.n_query_mapped < config.ORTHO_MIN_MAPPED_GENES
+                or ortho_report.mapping_rate < config.ORTHO_MIN_MAPPING_RATE):
+            raise ValueError(
+                "Ortholog mapping too sparse for reliable GSEA "
+                f"({ortho_report.as_text()}). "
+                "Check the ID column (prefer ENSGALG Ensembl IDs), or run "
+                "native-chicken GSEA for GO/KEGG/Reactome/WP instead."
+            )
+
         ranking = rank.build_rank(mapped, metric=rank_metric, key_col="human_symbol")
         result.ranking = ranking
         result.gsea = gsea.run_prerank(
@@ -126,7 +153,9 @@ def run_gsea_for_result(
             min_size=config.GSEA_MIN_SIZE, max_size=config.GSEA_MAX_SIZE,
             permutations=gsea_permutations, seed=config.GSEA_SEED,
         )
-        result.gsea_metadata = {
+        # update(), not reassign: the ortholog report was recorded above and
+        # must survive into the metadata the UI renders.
+        result.gsea_metadata.update({
             "libraries": libraries,
             "custom_gmt_terms": len(custom_gmt or {}),
             "gene_sets_requested": len(gene_sets),
@@ -135,7 +164,8 @@ def run_gsea_for_result(
             "organism": organism,
             "permutations": gsea_permutations,
             "ranking_size": len(ranking),
-        }
+            "strict_one_to_one": strict_one_to_one,
+        })
     except (KeyError, ValueError, RuntimeError, AssertionError, TypeError,
             OSError, ConnectionError) as exc:
         import traceback
