@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from deseq2_enrich import config
-from deseq2_enrich.pipeline import run_contrast
+from deseq2_enrich.pipeline import run_contrast, _partition_libraries
 
 
 @pytest.fixture(autouse=True)
@@ -261,3 +261,33 @@ def test_reports_scored_vs_requested_and_size_filters(tmp_path, toy_deseq2):
     # The bounds actually used are recorded, not just the config defaults.
     assert (md["min_size"], md["max_size"]) == (7, 333)
     assert md["gene_sets_scored_by_route"] == {"native": 1}
+
+
+def test_default_selection_routes_entirely_native(tmp_path, toy_deseq2):
+    """A default run must not touch the orthology endpoint at all."""
+    csv_path = tmp_path / "toy.tsv"
+    toy_deseq2.to_csv(csv_path, sep="\t", index=False)
+
+    native, ortholog = _partition_libraries(
+        config.GSEA_DEFAULT_LIBRARIES, config.GSEA_DEFAULT_MODE
+    )
+    assert ortholog == [], "default selection still routes through orthologs"
+    assert native, "default selection routes to no native sources"
+
+    with patch("deseq2_enrich.genesets.fetch_chicken_gmt",
+               return_value=dict(_FAKE_CHICKEN_GMT)), \
+         patch("deseq2_enrich.ortho.attach_human_symbol") as mock_ortho, \
+         patch("deseq2_enrich.genesets.fetch_library") as mock_enrichr, \
+         patch("deseq2_enrich.gsea.gp.prerank", side_effect=_fake_prerank_factory()):
+        res = run_contrast(
+            str(csv_path), contrast_name="toy", do_ora=False,
+            gsea_libraries=config.GSEA_DEFAULT_LIBRARIES,
+            gsea_mode=config.GSEA_DEFAULT_MODE, gsea_permutations=10,
+        )
+
+    assert res.errors == {}, res.errors
+    mock_ortho.assert_not_called()
+    mock_enrichr.assert_not_called()
+    assert res.gsea_metadata["gsea_routes"] == ["native"]
+    # No ortholog route means no mapping-rate guardrail on the default path.
+    assert "mapping_rate" not in res.gsea_metadata

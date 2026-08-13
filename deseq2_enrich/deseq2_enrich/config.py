@@ -62,7 +62,12 @@ GSEA_LIBRARIES = {
     "GO_Molecular_Function_2026": "GO:MF Molecular Function (2026)",
     "GO_Cellular_Component_2026": "GO:CC Cellular Component (2026)",
 }
-GSEA_DEFAULT_LIBRARIES = ["MSigDB_Hallmark_2020", "Reactome_2022"]
+# Both of these route to native chicken gene sets under the default 'auto'
+# mode, so a default run performs no ortholog mapping at all -- no dropout
+# bias, and the sparse-mapping guardrail never fires on the default path.
+# Hallmark and Oncogenic Signatures are human-only and remain selectable;
+# ticking either one adds a second, ortholog-based prerank with its own FDR.
+GSEA_DEFAULT_LIBRARIES = ["Reactome_2022", "GO_Biological_Process_2026"]
 GSEA_LIBRARY_GROUPS = {
     "Curated pathways": [
         "MSigDB_Hallmark_2020",
