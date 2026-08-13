@@ -404,18 +404,29 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
     slow = [lib for lib in selected_libs if lib in config.GSEA_SLOW_LIBRARIES]
     if slow:
         perms = params.get("permutations", config.GSEA_PERMUTATIONS)
-        st.error(
-            f"**{', '.join(config.GSEA_LIBRARIES.get(l, l) for l in slow)}** "
-            "selected. Full GO scores ~4,400 sets (BP alone) on a typical table "
-            "at a measured peak of **~3.8 GB**, against the ~1 GB limit on "
-            "Streamlit Community Cloud — the app will most likely be killed or "
-            f"thrash rather than finish (currently {perms} permutations).\n\n"
-            "**Use “GO slim (chicken, fast overview)” instead** — 82 curated "
-            "terms, 0.7 s, ~430 MB. For fine-grained GO, run it locally:\n"
-            "```\ndeseq2-enrich --input your_table.tsv --gsea-mode native_chicken \\\n"
-            "  --gsea-libs GO_Biological_Process_2026 --permutations 1000\n```",
-            icon="🛑",
-        )
+        names = ", ".join(config.GSEA_LIBRARIES.get(l, l) for l in slow)
+        if perms <= config.GSEA_INAPP_PERMUTATION_CEILING:
+            st.info(
+                f"**{names}** selected. Full GO now runs in-app via the chunked "
+                f"prerank — ~4,400 sets at a measured peak of ~880 MB in ~40 s "
+                f"at {perms} permutations. Note that FDR for chunked runs is "
+                "Benjamini–Hochberg over the pooled permutation p-values, not "
+                "gseapy's NES-based q (stated in the export manifest).",
+                icon="🧬",
+            )
+        else:
+            st.error(
+                f"**{names}** at {perms} permutations needs ~1.8 GB — measured "
+                "— against the ~1 GB limit on Streamlit Community Cloud. "
+                "Chunking cut the peak from ~3.7 GB, but memory scales with "
+                "permutation count and this still will not fit.\n\n"
+                f"Drop to {config.GSEA_INAPP_PERMUTATION_CEILING} permutations "
+                "(Quick mode) to run GO here at ~880 MB, or run the full "
+                "1000-permutation analysis locally:\n"
+                "```\ndeseq2-enrich --input your_table.tsv --gsea-mode native_chicken \\\n"
+                "  --gsea-libs GO_Biological_Process_2026 --permutations 1000\n```",
+                icon="🛑",
+            )
 
     mode_labels = {
         "auto": "Auto — native chicken where possible (recommended)",

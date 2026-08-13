@@ -231,11 +231,24 @@ def run_gsea_for_result(
                     result.df, metric=rank_metric, key_col=key_col
                 )
                 requested["native"] = len(native_sets)
-                routes["native"] = gsea.run_prerank(
+                # Large collections (GO) are scored in blocks so the peak stays
+                # inside the deployment's memory ceiling; small ones keep the
+                # original single-call path untouched.
+                chunked = len(native_sets) > config.GSEA_CHUNK_THRESHOLD
+                _run = gsea.run_prerank_chunked if chunked else gsea.run_prerank
+                routes["native"] = _run(
                     native_rank, native_sets,
                     min_size=min_size, max_size=max_size,
                     permutations=gsea_permutations, seed=config.GSEA_SEED,
                 )
+                result.gsea_metadata["native_chunked"] = chunked
+                if chunked:
+                    result.gsea_metadata["chunk_size"] = config.GSEA_CHUNK_SIZE
+                    # Disclosed in the manifest: not gseapy's NES-based q.
+                    result.gsea_metadata["fdr_method"] = (
+                        "Benjamini-Hochberg over pooled permutation p-values "
+                        "(chunked run); not gseapy's single-run NES-based q"
+                    )
                 result.gsea_metadata["native_key_col"] = key_col
                 result.gsea_metadata["native_sources"] = sorted(native_sources)
                 result.gsea_metadata["native_ranking_size"] = len(native_rank)

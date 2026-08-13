@@ -182,6 +182,35 @@ ORTHOLOG_CACHE_SIZE = 2
 ORA_CACHE_SIZE = 8
 GSEA_MAX_RUNNING_PLOT_TERMS = 250
 
+# --- Chunked prerank (memory ceiling) -------------------------------------
+# gseapy materialises a running-enrichment curve of length |ranked list| for
+# EVERY gene set inside a single gp.prerank call. At ~4,400 GO:BP sets over a
+# ~16k-gene ranking that is ~0.5 GB of curves alone, and the measured peak is
+# far higher once permutation structures and the transient upper-cased copy of
+# the gene-set dict are included -- well past Community Cloud's ~1 GB.
+#
+# The peak happens INSIDE gp.prerank, so _compact_raw (which prunes after the
+# call returns) cannot prevent it. Scoring in blocks bounds the peak to one
+# block. Verified empirically: ES, NES and nominal p are bit-identical whole
+# vs chunked because gseapy seeds its permutations per gene set. Only the
+# q-value differs, since gseapy computes it across whatever is in the run --
+# which is why FDR is recomputed globally afterwards.
+# 100 chosen from measurement, not intuition. Full GO:BP (4,372 scored sets,
+# 16.3k-gene ranking), peak RSS by chunk size at 1000 permutations:
+#   whole run 3,723 MB | 500 -> 2,380 | 100 -> 1,822 | 25 -> 1,693
+# Returns diminish below ~100 while runtime keeps climbing, because what
+# remains is gseapy's per-set transient, not accumulation across sets.
+GSEA_CHUNK_SIZE = 100
+
+# Peak scales with PERMUTATION count, which is the real ceiling. Chunked
+# GO:BP peak RSS: 100 perms -> 879 MB | 250 -> 1,057 | 500 -> 1,425 |
+# 1000 -> 1,822. So GO:BP fits a ~1 GB host only at ~100 permutations; above
+# that it belongs in a local CLI run. The app warns past this.
+GSEA_INAPP_PERMUTATION_CEILING = 100
+# Only chunk above this many sets; smaller libraries (Reactome, WikiPathways,
+# custom modules) stay on the original single-call path unchanged.
+GSEA_CHUNK_THRESHOLD = 800
+
 # --- Significance display -------------------------------------------------
 SIG_ALPHA = 0.05  # adj-p / FDR line used in plots and "top term" tables
 

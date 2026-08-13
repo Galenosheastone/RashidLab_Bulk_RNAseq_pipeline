@@ -140,3 +140,92 @@ def test_direction_handles_na_and_zero_nes():
     # Neither of these is a down-regulated set.
     assert tidy.loc["C | nan", "direction"] == "ns"
     assert tidy.loc["D | zero", "direction"] == "ns"
+
+
+# --------------------------------------------------------------------------
+# Chunked prerank: bounded peak memory, identical per-set statistics
+# --------------------------------------------------------------------------
+def _synthetic_sets(n_sets=120, n_genes=400, size=25, seed=3):
+    rng = np.random.default_rng(seed)
+    genes = [f"G{i:04d}" for i in range(n_genes)]
+    return genes, {
+        f"SET | s{i:03d}": list(rng.choice(genes, size=size, replace=False))
+        for i in range(n_sets)
+    }
+
+
+def _synthetic_ranking(genes, seed=4):
+    rng = np.random.default_rng(seed)
+    return pd.Series(rng.normal(size=len(genes)),
+                     index=genes).sort_values(ascending=False)
+
+
+def test_chunked_matches_whole_run_per_set_statistics():
+    """ES / NES / nominal p must not depend on how sets are partitioned.
+
+    gseapy seeds permutations per gene set, so a set's own statistics are
+    independent of what it was scored alongside. If this ever fails, the
+    chunking is perturbing the RNG and the results cannot be trusted.
+    """
+    genes, sets = _synthetic_sets()
+    rnk = _synthetic_ranking(genes)
+    kw = dict(min_size=5, max_size=100, permutations=100, seed=42, threads=1)
+
+    whole = gsea.run_prerank(rnk, sets, **kw).table.set_index("term")
+    chunked = gsea.run_prerank_chunked(rnk, sets, chunk_size=25, **kw)\
+                  .table.set_index("term")
+
+    common = whole.index.intersection(chunked.index)
+    assert len(common) > 20, "too few overlapping terms to be a real check"
+    assert len(common) == len(whole) == len(chunked)
+    for col in ("ES", "NES", "pval"):
+        a = pd.to_numeric(whole.loc[common, col], errors="coerce")
+        b = pd.to_numeric(chunked.loc[common, col], errors="coerce")
+        assert np.allclose(a, b, rtol=0, atol=1e-6, equal_nan=True), \
+            f"{col} drifted between whole and chunked runs"
+
+
+def test_chunked_fdr_is_global_not_per_chunk():
+    """Pooled BH over all nominal p, not a per-block q-value."""
+    genes, sets = _synthetic_sets()
+    rnk = _synthetic_ranking(genes)
+    res = gsea.run_prerank_chunked(
+        rnk, sets, min_size=5, max_size=100, permutations=100,
+        seed=42, threads=1, chunk_size=25,
+    )
+    from statsmodels.stats.multitest import multipletests
+
+    tbl = res.table
+    # The published pval is already floored, and BH is applied to that floored
+    # vector -- adjusting raw p and flooring afterwards would report q at the
+    # permutation resolution for the top terms regardless of multiplicity.
+    floor = 1.0 / (100 + 1)
+    expected = multipletests(
+        pd.to_numeric(tbl["pval"], errors="coerce").to_numpy(), method="fdr_bh"
+    )[1]
+    expected = np.maximum(expected, floor)
+    assert np.allclose(tbl["fdr"].to_numpy(), expected, atol=1e-12)
+    # Guard the ordering explicitly: no term may claim a q below what the
+    # multiplicity burden allows for the best possible p.
+    assert tbl["fdr"].min() >= floor
+    assert (tbl["fdr_method"] == "BH pooled (chunked run)").all()
+    # A per-chunk q-value could not exceed the pooled count; sanity-check that
+    # the adjustment really saw every term.
+    assert len(tbl) > 25, "global FDR must span more than one chunk"
+
+
+def test_chunked_keeps_running_curves_for_plots():
+    """Phase B must yield a real gseapy object so running plots still work."""
+    genes, sets = _synthetic_sets(n_sets=60)
+    rnk = _synthetic_ranking(genes)
+    res = gsea.run_prerank_chunked(
+        rnk, sets, min_size=5, max_size=100, permutations=100,
+        seed=42, threads=1, chunk_size=20, max_running_terms=10,
+    )
+    assert res.raw is not None and isinstance(res.raw.results, dict)
+    assert 0 < len(res.running_terms) <= 10
+    # result_for_term contract still holds for a single-route result.
+    assert gsea.result_for_term(res, res.running_terms[0]) is res
+    # and the retained terms really carry running payloads
+    payload = res.raw.results[res.running_terms[0]]
+    assert "RES" in payload and "hits" in payload

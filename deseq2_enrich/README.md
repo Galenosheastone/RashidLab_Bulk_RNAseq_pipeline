@@ -154,3 +154,35 @@ deseq2_enrich/
   anything you report, not Quick mode.
 * g:Profiler `g:SCS` is the multiple-testing correction for ORA; GSEA uses
   gseapy's FDR q-value. Don't compare the two thresholds directly.
+
+### Large collections: chunked GSEA and its FDR
+
+Native GO is ~12.7k chicken terms (~4.4k scoreable). Scoring that in one
+`gseapy` call peaks at **~3.7 GB** — it cannot run on Streamlit Community
+Cloud's ~1 GB. Collections above `GSEA_CHUNK_THRESHOLD` (800 sets) are
+therefore scored in blocks of `GSEA_CHUNK_SIZE` (100), freeing each block
+before the next.
+
+Measured on a 16.3k-gene table, full GO:BP, 4,372 sets scored:
+
+| permutations | whole run | chunked |
+|---|---|---|
+| 100 | ~3.8 GB | **~750–880 MB** (~40 s) |
+| 1000 | ~3.7 GB | ~1.8 GB (~5 min) |
+
+So **GO:BP now runs in-app at 100 permutations**. Peak memory scales with
+permutation count, so 1000-permutation GO still belongs in a local CLI run —
+the app says so when you ask for it.
+
+Two things to know about the numbers this produces:
+
+* **ES, NES and nominal p are unchanged** by chunking — bit-identical to a
+  whole run on the same seed and ranking, because gseapy seeds its
+  permutations per gene set. There is a regression test for this.
+* **FDR is different.** A chunked run reports **Benjamini–Hochberg over the
+  pooled permutation p-values** (the `fdr_method` column and the export
+  manifest say so), not gseapy's single-run NES-based q-value, which cannot be
+  reconstructed without pooling each set's null-NES distribution across blocks.
+  BH-adjusted permutation p is the same choice `fgsea`'s `padj` makes. The
+  nominal p is floored at `1/(nperm+1)` *before* adjustment, so a term cannot
+  report a q below what the multiple-testing burden allows.
