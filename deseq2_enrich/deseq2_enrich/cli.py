@@ -40,6 +40,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--permutations", type=int, default=config.GSEA_PERMUTATIONS)
     p.add_argument("--no-ora", action="store_true")
     p.add_argument("--no-gsea", action="store_true")
+    p.add_argument("--gsea-mode", default=config.GSEA_DEFAULT_MODE,
+                   choices=list(config.GSEA_MODES),
+                   help="'auto' (default) scores GO/Reactome/WikiPathways on "
+                        "native chicken gene sets and uses orthologs only for "
+                        "human-only collections; 'native_chicken' forces native; "
+                        "'ortholog' is the legacy human-mapped route")
+    p.add_argument("--chicken-gmt-keying", default=config.CHICKEN_GMT_KEYING,
+                   choices=list(config.CHICKEN_GMT_KEYINGS),
+                   help="ID space of the native chicken GMT; 'name' (symbols) is "
+                        "correct for most exports, since the ENSG-keyed GMT ships "
+                        "GRCg7b IDs that will not match a galgal6 table")
+    p.add_argument("--strict-1to1", action="store_true",
+                   help="keep only unambiguous chicken<->human ortholog pairs "
+                        "(ortholog route only)")
+    p.add_argument("--min-size", type=int, default=config.GSEA_MIN_SIZE)
+    p.add_argument("--max-size", type=int, default=config.GSEA_MAX_SIZE)
     p.add_argument("--static", action="store_true",
                    help="also write SVG/PDF (needs kaleido+chrome)")
     return p
@@ -63,6 +79,13 @@ def main(argv=None) -> int:
         custom_gmt=custom, organism=args.organism,
         do_ora=not args.no_ora, do_gsea=not args.no_gsea,
         gsea_permutations=args.permutations,
+        # The CLI is the supported route for reporting-grade runs: 1000
+        # permutations needs ~2 GB, which does not fit the deployed app's
+        # ~1 GB box. Defaults here match the app so results are comparable.
+        gsea_mode=args.gsea_mode,
+        chicken_gmt_keying=args.chicken_gmt_keying,
+        strict_one_to_one=args.strict_1to1,
+        min_size=args.min_size, max_size=args.max_size,
     )
     print(res.report.as_text())
     print("DEG counts:", res.deg_sets.counts)

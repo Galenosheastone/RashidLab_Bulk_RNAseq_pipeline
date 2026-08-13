@@ -771,8 +771,13 @@ def tab_gsea(res: ContrastResult):
     if params.get("permutations", 0) < 1000:
         st.warning(
             f"GSEA was run with {params.get('permutations')} permutations "
-            "(Quick mode). Q-values are noisy. Rerun with full 1000 "
-            "permutations before reporting.",
+            "(Quick mode). Q-values are noisy — treat this as exploration, not "
+            "a result. Reporting-grade runs need 1000 permutations, which "
+            "measured **~2 GB** here against this instance's ~1 GB limit, so "
+            "they are best run locally:\n\n"
+            "```\ndeseq2-enrich --input your_table.tsv --name my_contrast \\\n"
+            "  --gsea-mode auto --permutations 1000\n```\n"
+            "Same defaults as this app, so the numbers are comparable.",
             icon="⚠️",
         )
     if "gsea" in res.errors:
