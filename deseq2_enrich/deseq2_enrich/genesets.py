@@ -35,10 +35,94 @@ def fetch_library(name: str, organism: str = "human") -> dict:
     return retry_call(gp.get_library, name=name, organism=organism)
 
 
+def _read_obo(url: str) -> list[str]:
+    """Download an OBO file, following redirects, as decoded lines.
+
+    ``current.geneontology.org`` 302s to the release bucket, so redirects must
+    be followed -- fetching without them yields a 167-byte stub that parses to
+    zero terms rather than failing loudly.
+    """
+    def _download() -> bytes:
+        req = urllib.request.Request(url, headers={"User-Agent": "deseq2_enrich"})
+        with urllib.request.urlopen(req, timeout=120) as fh:  # urlopen follows 3xx
+            return fh.read()
+
+    return retry_call(_download).decode("utf-8", "replace").splitlines()
+
+
+@lru_cache(maxsize=1)
+def fetch_go_slim_ids() -> frozenset[str]:
+    """GO ids in the Consortium's generic slim (~140 broad terms, ~123 KB).
+
+    The slim is what makes GO usable inside the deployed app: it cuts chicken
+    GO from ~5,900 scoreable sets to ~82, i.e. seconds instead of minutes and
+    well inside the memory ceiling. It is an overview, not a replacement for
+    full GO -- report fine-grained terms from a local full-GO run.
+    """
+    ids = {
+        line.strip()[4:]
+        for line in _read_obo(config.GO_SLIM_URL)
+        if line.startswith("id: GO:")
+    }
+    if not ids:
+        raise RuntimeError(
+            f"GO slim from {config.GO_SLIM_URL} parsed to zero terms; the file "
+            "format may have changed or a redirect was not followed."
+        )
+    return frozenset(ids)
+
+
+@lru_cache(maxsize=1)
+def fetch_go_namespaces() -> dict[str, str]:
+    """Map GO id -> 'biological_process' / 'molecular_function' / etc.
+
+    The g:Profiler GMT carries no namespace, so without this a request for
+    GO:BP silently scores all three branches together. ~31 MB, parsed to a
+    ~48k-entry dict and cached for the session.
+    """
+    ns: dict[str, str] = {}
+    current: str | None = None
+    for line in _read_obo(config.GO_BASIC_URL):
+        line = line.rstrip("\n")
+        if line.startswith("id: GO:"):
+            current = line[4:]
+        elif line.startswith("namespace:") and current:
+            ns[current] = line.split(": ", 1)[1].strip()
+            current = None
+    if not ns:
+        raise RuntimeError(
+            f"GO ontology from {config.GO_BASIC_URL} parsed to zero namespaces; "
+            "the file format may have changed or a redirect was not followed."
+        )
+    return ns
+
+
+def _go_term_selector(go_subsets: tuple[str, ...]):
+    """Build a predicate over GO term ids for the requested sub-collections."""
+    if not go_subsets:
+        return lambda _tid: True
+    wanted_ns = {
+        config.GO_SUBSET_NAMESPACE[s]
+        for s in go_subsets
+        if s in config.GO_SUBSET_NAMESPACE
+    }
+    slim_ids = fetch_go_slim_ids() if "slim" in wanted_ns else frozenset()
+    namespaces = fetch_go_namespaces() if (wanted_ns - {"slim"}) else {}
+    real_ns = wanted_ns - {"slim"}
+
+    def _keep(tid: str) -> bool:
+        if tid in slim_ids:
+            return True
+        return bool(real_ns) and namespaces.get(tid) in real_ns
+
+    return _keep
+
+
 @lru_cache(maxsize=config.CHICKEN_GMT_CACHE_SIZE)
 def fetch_chicken_gmt(
     keying: str = config.CHICKEN_GMT_KEYING,
     sources: tuple[str, ...] = ("GO", "REAC", "WP"),
+    go_subsets: tuple[str, ...] = (),
 ) -> dict:
     """Native chicken gene sets as ``{"TAG | description": [gene_ids]}``.
 
@@ -62,6 +146,9 @@ def fetch_chicken_gmt(
         )
     url = config.GPROFILER_GMT_URLS[keying]
     wanted = set(sources or ())
+    # Resolved before the GMT loop so a bad ontology fetch fails fast rather
+    # than after parsing 14 MB.
+    keep_go = _go_term_selector(tuple(go_subsets or ()))
 
     def _download() -> bytes:
         with urllib.request.urlopen(url, timeout=60) as fh:
@@ -90,6 +177,8 @@ def fetch_chicken_gmt(
         )
         if tag is None or (wanted and tag not in wanted):
             continue
+        if tag == "GO" and not keep_go(term_id):
+            continue
         genes = [sys.intern(g.strip()) for g in parts[2:] if g.strip()]
         if not genes:
             continue
@@ -99,7 +188,9 @@ def fetch_chicken_gmt(
     if not sets:
         raise RuntimeError(
             f"Native chicken gene sets from {url} parsed to zero usable terms "
-            f"for sources {sorted(wanted)}. The file format may have changed."
+            f"for sources {sorted(wanted)}"
+            + (f" / GO subsets {sorted(go_subsets)}" if go_subsets else "")
+            + ". The file format may have changed."
         )
     return sets
 
@@ -107,6 +198,8 @@ def fetch_chicken_gmt(
 def clear_cache() -> None:
     fetch_library.cache_clear()
     fetch_chicken_gmt.cache_clear()
+    fetch_go_slim_ids.cache_clear()
+    fetch_go_namespaces.cache_clear()
 
 
 def cache_info():

@@ -406,13 +406,14 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
         perms = params.get("permutations", config.GSEA_PERMUTATIONS)
         st.error(
             f"**{', '.join(config.GSEA_LIBRARIES.get(l, l) for l in slow)}** "
-            "selected. Native chicken GO is ~18,700 terms and scores ~5,900 sets "
-            "on a typical table. Measured peak memory: **~4.2 GB**, against the "
-            "~1 GB limit on Streamlit Community Cloud — the app will most likely "
-            "be killed or thrash rather than finish. Runtime is ~6 min at 1000 "
-            f"permutations even with enough RAM (currently {perms}).\n\n"
-            "Reactome + WikiPathways score 570 sets at ~830 MB in under a minute. "
-            "Run GO locally, or deselect it here.",
+            "selected. Full GO scores ~4,400 sets (BP alone) on a typical table "
+            "at a measured peak of **~3.8 GB**, against the ~1 GB limit on "
+            "Streamlit Community Cloud — the app will most likely be killed or "
+            f"thrash rather than finish (currently {perms} permutations).\n\n"
+            "**Use “GO slim (chicken, fast overview)” instead** — 82 curated "
+            "terms, 0.7 s, ~430 MB. For fine-grained GO, run it locally:\n"
+            "```\ndeseq2-enrich --input your_table.tsv --gsea-mode native_chicken \\\n"
+            "  --gsea-libs GO_Biological_Process_2026 --permutations 1000\n```",
             icon="🛑",
         )
 
@@ -1091,6 +1092,9 @@ def main():
             "**native chicken gene sets** (GO / Reactome / WikiPathways). No genes "
             "are dropped for lacking a human counterpart, so the ranked list stays "
             "your real gene universe.\n"
+            "* **GO slim** gives a fast 82-term chicken GO overview that runs in "
+            "under a second; full GO:BP/MF/CC is available but needs several GB, "
+            "so run it locally with the CLI.\n"
             "* **Hallmark** and **Oncogenic Signatures** are human-only collections "
             "with no chicken equivalent. Select either in the GSEA tab and it runs as "
             "a separate ortholog-mapped prerank, with its own FDR and a visible "

@@ -114,6 +114,12 @@ def _partition_libraries(
     g:Profiler does not redistribute it -- so it also falls to orthologs.
     """
     if gsea_mode == "ortholog":
+        bad = [l for l in libraries if l in config.NATIVE_ONLY_LIBRARIES]
+        if bad:
+            raise ValueError(
+                f"{', '.join(bad)} has no human/Enrichr equivalent and cannot "
+                "run on the ortholog route. Use 'auto' or 'native_chicken'."
+            )
         return set(), list(libraries)
     if gsea_mode == "native_chicken":
         native = {
@@ -203,11 +209,20 @@ def run_gsea_for_result(
         if native_sources or (gsea_mode == "native_chicken" and custom_gmt):
             native_sets = {}
             if native_sources:
+                # "GO:BP"/"GO:SLIM" etc. select sub-collections of the single
+                # "GO" source; everything else is a source tag in its own right.
+                go_subsets = {t for t in native_sources if t.startswith("GO:")}
+                plain = {t for t in native_sources if not t.startswith("GO:")}
+                if go_subsets:
+                    plain.add("GO")
                 native_sets.update(
                     genesets.fetch_chicken_gmt(
-                        keying=chicken_gmt_keying, sources=tuple(sorted(native_sources))
+                        keying=chicken_gmt_keying,
+                        sources=tuple(sorted(plain)),
+                        go_subsets=tuple(sorted(go_subsets)),
                     )
                 )
+                result.gsea_metadata["native_go_subsets"] = sorted(go_subsets)
             if custom_gmt:
                 native_sets.update(custom_gmt)
             if native_sets:

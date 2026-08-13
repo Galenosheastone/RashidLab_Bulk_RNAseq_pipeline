@@ -61,6 +61,7 @@ GSEA_LIBRARIES = {
     "GO_Biological_Process_2026": "GO:BP Biological Process (2026)",
     "GO_Molecular_Function_2026": "GO:MF Molecular Function (2026)",
     "GO_Cellular_Component_2026": "GO:CC Cellular Component (2026)",
+    "GO_Slim_Chicken": "GO slim (chicken, fast overview)",
 }
 # Both of these route to native chicken gene sets under the default 'auto'
 # mode, so a default run performs no ortholog mapping at all -- no dropout
@@ -87,6 +88,7 @@ GSEA_LIBRARY_GROUPS = {
         "MSigDB_Oncogenic_Signatures",
     ],
     "Gene Ontology": [
+        "GO_Slim_Chicken",
         "GO_Biological_Process_2026",
         "GO_Molecular_Function_2026",
         "GO_Cellular_Component_2026",
@@ -120,18 +122,44 @@ NATIVE_GSEA_SOURCES = {
     "REAC": "Reactome (chicken)",
     "WP": "WikiPathways (chicken)",
 }
-NATIVE_GSEA_DEFAULT_SOURCES = ["GO", "REAC"]
+NATIVE_GSEA_DEFAULT_SOURCES = ["REAC", "WP"]
 
-# Enrichr library -> native chicken source, used by 'auto' routing. GO:BP/MF/CC
-# all collapse to "GO": the GMT does not encode the GO namespace in the term
-# ID, so native GO cannot be split into the three branches.
+# --- GO ontology helpers --------------------------------------------------
+# The g:Profiler GMT does not encode the GO namespace in the term id, so
+# "GO:BP" previously scored all of GO -- BP, MF and CC pooled. go-basic.obo
+# supplies the real namespace per term. goslim_generic.obo is the GO
+# Consortium's curated ~140-term overview subset; 82 of those survive in
+# chicken at the default size bounds, which is what makes GO tractable in the
+# deployed app at all (0.7 s / 391 MB at 100 permutations, versus 5,924 sets
+# for full GO). Both URLs verified live 2026-08-13; follow redirects.
+GO_SLIM_URL = "http://current.geneontology.org/ontology/subsets/goslim_generic.obo"
+GO_BASIC_URL = "http://current.geneontology.org/ontology/go-basic.obo"
+
+# Native GO sub-collections -> the GO namespace they select ("slim" is the
+# curated subset rather than a namespace).
+GO_SUBSET_NAMESPACE = {
+    "GO:BP": "biological_process",
+    "GO:MF": "molecular_function",
+    "GO:CC": "cellular_component",
+    "GO:SLIM": "slim",
+}
+
+# Enrichr library -> native chicken source/sub-collection, used by 'auto'
+# routing. The GO entries resolve to real namespaces via go-basic.obo (see
+# GO_SUBSET_NAMESPACE), so GO:BP now means biological_process only rather than
+# all three branches pooled.
 LIBRARY_NATIVE_SOURCE = {
     "Reactome_2022": "REAC",
     "WikiPathway_2023_Human": "WP",
-    "GO_Biological_Process_2026": "GO",
-    "GO_Molecular_Function_2026": "GO",
-    "GO_Cellular_Component_2026": "GO",
+    "GO_Biological_Process_2026": "GO:BP",
+    "GO_Molecular_Function_2026": "GO:MF",
+    "GO_Cellular_Component_2026": "GO:CC",
+    "GO_Slim_Chicken": "GO:SLIM",
 }
+
+# Selectable in the app but not an Enrichr library, so it cannot be routed
+# through the human-ortholog path.
+NATIVE_ONLY_LIBRARIES = ("GO_Slim_Chicken",)
 # Human-only concepts with no chicken equivalent; these keep the ortholog route.
 HUMAN_ONLY_LIBRARIES = ("MSigDB_Hallmark_2020", "MSigDB_Oncogenic_Signatures")
 
