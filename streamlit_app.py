@@ -104,7 +104,10 @@ def _cache_status() -> str:
 # --------------------------------------------------------------------------
 def sidebar() -> dict:
     st.sidebar.title("🧬 DESeq2 Enrichment")
-    st.sidebar.caption("ORA (g:Profiler, native chicken) + GSEA (MSigDB via orthologs)")
+    st.sidebar.caption(
+        "Native chicken throughout: ORA via g:Profiler, GSEA on chicken "
+        "GO / Reactome / WikiPathways. Orthologs only for human-only collections."
+    )
 
     st.sidebar.subheader("1 · Data")
     use_sample = st.sidebar.toggle("Use bundled sample data", value=True,
@@ -344,7 +347,12 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
         default=[lib for lib in default_libs if lib in config.GSEA_LIBRARIES],
         format_func=_format_gsea_library,
         key=f"gsea_libs_{res.name}",
-        help="GO selections here are human-symbol Enrichr libraries used after chicken-to-human ortholog mapping.",
+        help=(
+            "Under the default Auto route, GO / Reactome / WikiPathways selections "
+            "are served from native chicken gene sets — the Enrichr library name is "
+            "just how you pick the collection. Hallmark and Oncogenic Signatures "
+            "have no chicken equivalent and run through ortholog mapping instead."
+        ),
     )
     custom_gmt_file = st.file_uploader(
         "Custom GMT gene sets",
@@ -972,6 +980,11 @@ def tab_export(results: list[ContrastResult], p: dict):
                 "parameters": {k: v for k, v in p.items()
                                if k not in ("uploads", "custom_gmt_file", "run")},
                 "contrasts": [r.name for r in results],
+                # Which route produced these numbers, how many sets were
+                # actually scored, and (if orthologs were used at all) the
+                # mapping rate. Without this the exported tables cannot be
+                # interpreted or reproduced.
+                "gsea_metadata": {r.name: (r.gsea_metadata or {}) for r in results},
             }
             z.writestr("run_manifest.json", json.dumps(manifest, indent=2, default=str))
             for r in results:
@@ -1005,14 +1018,23 @@ def main():
 
     results = st.session_state.get("results")
     if not results:
-        st.title("DESeq2 → ORA / GSEA")
+        st.title("DESeq2 → ORA / GSEA — native chicken")
         st.markdown(
             "Upload one or more **DESeq2 result tables** (or use the bundled sample), "
-            "set thresholds in the sidebar, and click **Run enrichment**.\n\n"
+            "set thresholds in the sidebar, and click **Run enrichment**. Both "
+            "enrichment steps run on *Gallus gallus* annotations by default — no "
+            "human ortholog mapping is involved unless you ask for it.\n\n"
             "* **ORA** runs on native chicken annotations via g:Profiler "
             "(GO / KEGG / Reactome / WikiPathways) with your tested genes as background.\n"
-            "* **GSEA** ranks by the DESeq2 Wald statistic, maps chicken → human "
-            "orthologs, and scores against pathway or GO collections chosen in the GSEA tab.\n"
+            "* **GSEA** ranks by the DESeq2 Wald statistic and scores against "
+            "**native chicken gene sets** (GO / Reactome / WikiPathways). No genes "
+            "are dropped for lacking a human counterpart, so the ranked list stays "
+            "your real gene universe.\n"
+            "* **Hallmark** and **Oncogenic Signatures** are human-only collections "
+            "with no chicken equivalent. Select either in the GSEA tab and it runs as "
+            "a separate ortholog-mapped prerank, with its own FDR and a visible "
+            "mapping rate. KEGG has no downloadable chicken gene sets and is "
+            "available in the ORA tab only.\n"
             "* Add a **custom .gmt** in the GSEA tab to score your own curated pathway modules."
         )
         return

@@ -5,8 +5,12 @@ table and run over-representation analysis (ORA) and pre-ranked GSEA, then plot
 the results. Built pure-Python so it deploys to **Streamlit Community Cloud**
 with no R/Bioconductor.
 
-Native chicken annotation is handled without ortholog loss for ORA; GSEA uses
-human orthologs so you get the richly curated MSigDB collections.
+**Native chicken end to end.** Both ORA and GSEA run on *Gallus gallus*
+annotations by default, so no gene is dropped for lacking a human counterpart
+and the ranked list stays your real gene universe. Human orthologs are used
+only for the two collections that have no chicken equivalent (MSigDB Hallmark
+and Oncogenic Signatures), and only if you select them — in which case they run
+as a separate prerank with their own FDR and a visible mapping rate.
 
 ---
 
@@ -17,9 +21,9 @@ human orthologs so you get the richly curated MSigDB collections.
 | Load & validate | pandas | auto-detects DESeq2 columns; reports ID coverage, biotypes, NA-padj |
 | DEG selection | — | default `padj < 0.05` with no fold-change cutoff; up/down run separately; **universe = tested genes** |
 | **ORA** | **g:Profiler** (`ggallus`) | native chicken GO/KEGG/Reactome/WikiPathways; **custom background** |
-| Ortholog map | g:Profiler `orth` | chicken → human, for GSEA only |
+| Ortholog map | g:Profiler `orth` | chicken → human; **only** for Hallmark / Oncogenic, keyed on stable Ensembl IDs, with a mapping-rate guardrail |
 | Ranking | — | DESeq2 **Wald `stat`** (default), `sign(FC)·-log10p`, or `log2FC`; duplicates collapsed by max magnitude |
-| **GSEA** | **gseapy** prerank | MSigDB Hallmark / Reactome / WikiPathways / KEGG (Enrichr-hosted) + your custom `.gmt` |
+| **GSEA** | **gseapy** prerank | **native chicken GO / Reactome / WikiPathways** (g:Profiler GMT) + your custom `.gmt`; Hallmark / Oncogenic via orthologs on request |
 | Plots | Plotly + matplotlib | volcano, MA, ORA dotplot, GSEA bar + running-ES, leading-edge heatmap, enrichment map, UpSet |
 
 Two design choices are enforced because they are the usual ORA pitfalls: the
@@ -109,8 +113,9 @@ Upload a `.gmt` in the sidebar (or `--custom-gmt`) to score your curated
 modules (cGAS-STING, necroptosis, apoptosis, inflammasome, osteoclast,
 osteoblast) through the identical GSEA path. Format:
 `module_name<TAB>description<TAB>GENE1<TAB>GENE2…`. Genes must match the ranking
-namespace (human symbols after ortholog mapping, or set the ranking to a column
-that matches your GMT).
+namespace — under the default native route that is **chicken gene symbols**
+(the ranking is built from `gene_name`/`gene_id`), not human symbols. Case is
+normalised on both sides, so casing will not silently zero the overlap.
 
 ---
 
@@ -119,7 +124,10 @@ that matches your GMT).
 Change `ORGANISM` (and, if needed, `ORTHOLOG_TARGET`) in
 `deseq2_enrich/config.py` to any g:Profiler code (`hsapiens`, `mmusculus`, …).
 For a species already covered by MSigDB you can skip the ortholog step by
-ranking on symbols directly.
+ranking on symbols directly. The native-chicken GMT route is chicken-specific:
+`GPROFILER_GMT_URLS` points at g:Profiler's per-organism files, so another
+organism needs its own URL and a check that the GMT's ID space matches your
+table (see the note on assembly-version mismatch in `config.py`).
 
 ---
 
