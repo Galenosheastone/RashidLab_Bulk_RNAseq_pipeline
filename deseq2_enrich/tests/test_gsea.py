@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -61,3 +62,60 @@ def test_run_prerank_trims_running_arrays_for_lower_priority_terms():
     assert len(result.raw.results["TERM_B"]["RES"]) == len(ranking)
     assert result.raw.results["TERM_B"]["hits"] == []
     assert result.raw.gene_sets is None
+
+
+# --------------------------------------------------------------------------
+# Phase 2: case normalisation, p-value floor, real prerank smoke
+# --------------------------------------------------------------------------
+def test_case_mismatch_does_not_zero_the_overlap():
+    """Lower-case ranking vs upper-case gene sets must still score."""
+    rng = np.random.default_rng(7)
+    genes = [f"g{i:03d}" for i in range(60)]          # lower case ranking
+    scores = pd.Series(rng.normal(size=60), index=genes).sort_values(ascending=False)
+    gene_sets = {"TOP": [g.upper() for g in genes[:20]]}  # upper case members
+
+    res = gsea.run_prerank(scores, gene_sets, min_size=5, max_size=50,
+                           permutations=50, seed=1, threads=1)
+    assert not res.table.empty, "case mismatch silently zeroed the overlap"
+
+
+def test_pval_floored_at_permutation_resolution():
+    """A permutation test cannot resolve below 1/(n+1); 0.0 must not survive."""
+    res2d = pd.DataFrame({
+        "Term": ["A | x", "B | y"],
+        "NES": [2.0, -1.5],
+        "NOM p-val": [0.0, 0.5],
+        "FDR q-val": [0.0, 0.4],
+        "FWER p-val": [0.0, 0.6],
+    })
+    tidy = gsea._tidy(res2d, n_perm=100)
+    floor = 1.0 / 101
+    assert tidy["pval"].min() == pytest.approx(floor)
+    assert tidy["fdr"].min() == pytest.approx(floor)
+    assert tidy["fwer"].min() == pytest.approx(floor)
+    # Values above the floor are untouched.
+    assert tidy.loc[tidy["term"] == "B | y", "pval"].iloc[0] == pytest.approx(0.5)
+
+
+def test_run_prerank_real_smoke():
+    """A genuine prerank: guards the gseapy internals the plots depend on."""
+    rng = np.random.default_rng(0)
+    genes = [f"G{i:03d}" for i in range(60)]
+    scores = pd.Series(rng.normal(size=60), index=genes).sort_values(ascending=False)
+    # a term enriched at the top, a term enriched at the bottom
+    gene_sets = {"TOP": list(scores.index[:20]), "BOTTOM": list(scores.index[-20:])}
+
+    res = gsea.run_prerank(scores, gene_sets, min_size=5, max_size=50,
+                           permutations=100, seed=1, threads=1)
+    assert not res.table.empty
+    assert {"term", "NES", "fdr"}.issubset(res.table.columns)
+    # internals the app/plots depend on still exist after _compact_raw
+    assert isinstance(res.raw.results, dict)
+    # the heavy inputs really were dropped
+    for attr in gsea._GSEAPY_HEAVY_ATTRS:
+        assert getattr(res.raw, attr, None) is None
+    # TOP should score positive NES, BOTTOM negative
+    nes = dict(zip(res.table["term"].astype(str), res.table["NES"]))
+    top = next(v for k, v in nes.items() if k.endswith("TOP"))
+    bot = next(v for k, v in nes.items() if k.endswith("BOTTOM"))
+    assert top > 0 > bot

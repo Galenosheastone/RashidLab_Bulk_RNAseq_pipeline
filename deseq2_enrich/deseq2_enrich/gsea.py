@@ -7,6 +7,7 @@ arrays for lower-priority terms so broad GO libraries do not dominate memory.
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -62,10 +63,25 @@ def run_prerank(
     gene_sets : dict | str
         ``{term: [genes]}`` dict, a GMT path, or an Enrichr library name.
     """
+    # gseapy matches genes by exact string, so a single case mismatch between
+    # the ranking and the gene sets silently zeroes the overlap rather than
+    # erroring. Normalise BOTH sides to upper case. Only dict gene sets can be
+    # transformed -- a GMT path or an Enrichr library name is a string gseapy
+    # resolves itself and must be passed through untouched. Human HGNC symbols,
+    # g:Profiler ortholog names and ENSGALG IDs are already upper case, so this
+    # is a no-op for them and a rescue for anything that is not.
     rnk = ranking.copy()
-    rnk.index = rnk.index.astype(str)
+    rnk.index = rnk.index.astype(str).str.upper()
     rnk = rnk[~rnk.index.duplicated(keep="first")]
     rnk = rnk.sort_values(ascending=False)
+    if isinstance(gene_sets, dict):
+        # Re-intern after upper-casing: the native chicken GMT is ~20k sets over
+        # ~16k distinct genes with heavy overlap, and without interning the new
+        # upper-cased strings the dict balloons on a memory-limited host.
+        gene_sets = {
+            term: list({sys.intern(str(g).upper()) for g in members})
+            for term, members in gene_sets.items()
+        }
     if len(rnk) < 2:
         raise ValueError(
             "GSEA requires at least 2 ranked genes after ID/ortholog mapping; "
@@ -84,9 +100,16 @@ def run_prerank(
         no_plot=True,
         verbose=False,
     )
-    tidy = _tidy(pre.res2d)
+    tidy = _tidy(pre.res2d, n_perm=permutations)
     running_terms = _compact_raw(pre, tidy, max_running_terms, len(rnk))
     return GSEAResult(table=tidy, raw=pre, ranking=rnk, running_terms=running_terms)
+
+
+# Private gseapy attributes holding the bulky inputs we drop after scoring to
+# stay inside a ~1 GB host. Centralised so a gseapy upgrade that renames them
+# is a one-line change -- and so test_run_prerank_real_smoke, which exercises
+# the real object, fails loudly in CI rather than silently in production.
+_GSEAPY_HEAVY_ATTRS = ("gene_sets", "gmt", "_gmt", "ranking", "rnk")
 
 
 def _compact_raw(pre, tidy: pd.DataFrame,
@@ -134,7 +157,7 @@ def _compact_raw(pre, tidy: pd.DataFrame,
         payload["hits"] = []
         payload.pop("RES_null", None)
 
-    for attr in ("gene_sets", "gmt", "_gmt", "ranking", "rnk"):
+    for attr in _GSEAPY_HEAVY_ATTRS:
         if hasattr(pre, attr):
             try:
                 setattr(pre, attr, None)
@@ -161,8 +184,13 @@ class _PrunedRunningCurve:
         return np.zeros(self.length, dtype=dtype or float)
 
 
-def _tidy(res2d: pd.DataFrame) -> pd.DataFrame:
-    """Normalise gseapy's res2d into consistent, sortable columns."""
+def _tidy(res2d: pd.DataFrame, n_perm: int = config.GSEA_PERMUTATIONS) -> pd.DataFrame:
+    """Normalise gseapy's res2d into consistent, sortable columns.
+
+    ``n_perm`` sets the display floor for p/FDR: a permutation test cannot
+    resolve a p-value below ``1/(n_perm + 1)``, so gseapy printing 0.0 is an
+    artifact of the resolution, not evidence of p == 0.
+    """
     df = res2d.copy()
     # gseapy column names differ slightly across versions; normalise.
     colmap = {
@@ -190,6 +218,14 @@ def _tidy(res2d: pd.DataFrame) -> pd.DataFrame:
         else:
             df["collection"] = "custom"
             df["term_short"] = df["term"]
+    # Floor the displayed significance at the permutation resolution so a
+    # reported "0" cannot be mistaken for an exact zero.
+    floor = 1.0 / (int(n_perm) + 1) if n_perm else 0.0
+    if floor:
+        for col in ("pval", "fdr", "fwer"):
+            if col in df.columns:
+                df[col] = df[col].mask(df[col] < floor, floor)
+
     df["direction"] = np.where(df.get("NES", 0) >= 0, "up", "down")
     sort_key = "fdr" if "fdr" in df.columns else "pval"
     return df.sort_values(sort_key).reset_index(drop=True)
