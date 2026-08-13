@@ -11,6 +11,7 @@ Design notes
 """
 from __future__ import annotations
 
+import gc
 import io as _io
 import os
 import shutil
@@ -42,7 +43,7 @@ def _purge_project_bytecode(root: str) -> None:
 _purge_project_bytecode(APP_DIR)
 sys.path.insert(0, PACKAGE_PARENT)
 
-from deseq2_enrich import config, plots, genesets  # noqa: E402
+from deseq2_enrich import config, plots, genesets, ora, ortho  # noqa: E402
 from deseq2_enrich.pipeline import run_contrast, run_gsea_for_result, ContrastResult  # noqa: E402
 
 st.set_page_config(page_title="DESeq2 Enrichment", layout="wide",
@@ -52,6 +53,50 @@ SAMPLE_PATH = os.path.join(
     PACKAGE_PARENT,
     "sample_data", "DESeq2_Sacral_vs_Sacralized_Caudal_all.tsv",
 )
+
+
+def _stored_params(p: dict) -> dict:
+    return {
+        k: v for k, v in p.items()
+        if k not in ("uploads", "custom_gmt_file", "run")
+    }
+
+
+def _clear_package_caches() -> None:
+    for module in (genesets, ora, ortho):
+        clear = getattr(module, "clear_cache", None)
+        if clear is not None:
+            clear()
+
+
+def _clear_streamlit_caches() -> None:
+    for attr in ("cache_data", "cache_resource"):
+        cache = getattr(st, attr, None)
+        clear = getattr(cache, "clear", None)
+        if clear is not None:
+            clear()
+
+
+def _clear_analysis_memory(clear_results: bool = False) -> None:
+    if clear_results:
+        st.session_state.pop("results", None)
+        st.session_state.pop("params", None)
+    _clear_package_caches()
+    _clear_streamlit_caches()
+    gc.collect()
+
+
+def _cache_status() -> str:
+    parts = []
+    for label, module in (
+        ("Gene sets", genesets),
+        ("ORA", ora),
+        ("Orthologs", ortho),
+    ):
+        info = getattr(module, "cache_info", lambda: None)()
+        if info is not None:
+            parts.append(f"{label}: {info.currsize}/{info.maxsize}")
+    return " | ".join(parts) if parts else "No package caches active"
 
 
 # --------------------------------------------------------------------------
@@ -107,6 +152,11 @@ def sidebar() -> dict:
                                 use_container_width=True)
 
     st.sidebar.caption("Uploaded data is processed in memory and not stored.")
+    with st.sidebar.expander("Memory & cache", expanded=False):
+        st.caption(_cache_status())
+        if st.button("Clear cached analysis data", key="clear_cached_analysis"):
+            _clear_analysis_memory(clear_results=True)
+            st.success("Cleared cached results and network caches.")
 
     return dict(
         use_sample=use_sample, uploads=uploads, padj=padj, lfc=lfc, id_col=id_col,
@@ -267,6 +317,17 @@ def _gsea_term_label(row: pd.Series) -> str:
     return f"{collection}: {term}  |  NES {nes:.2f}, FDR {fdr:.2g}"
 
 
+def _gsea_terms_with_running_data(gsea_result, terms: list[str]) -> list[str]:
+    retained = set(getattr(gsea_result, "running_terms", ()) or ())
+    raw_results = getattr(getattr(gsea_result, "raw", None), "results", {}) or {}
+    available = []
+    for term in terms:
+        payload = raw_results.get(term, {})
+        if term in retained or ("RES" in payload and "hits" in payload):
+            available.append(term)
+    return available
+
+
 def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
     st.markdown("**Gene-set collections**")
     default_libs = res.gsea_metadata.get(
@@ -315,6 +376,7 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
             organism=config.ORGANISM,
             gsea_permutations=params.get("permutations", config.GSEA_PERMUTATIONS),
         )
+    gc.collect()
     st.session_state["gsea_libs"] = selected_libs
     params["gsea_libs"] = selected_libs
     params["gsea_custom_gmt_name"] = custom_name
@@ -704,19 +766,33 @@ def tab_gsea(res: ContrastResult):
 
     st.markdown("**Running-enrichment plot**")
     term_rows = filtered.reset_index(drop=True)
-    term = st.selectbox(
-        "Term",
-        term_rows["term"].tolist(),
-        format_func=lambda t: _gsea_term_label(
-            term_rows.loc[term_rows["term"].eq(t)].iloc[0]
-        ),
-        key=f"gsea_term_{res.name}",
+    running_terms = _gsea_terms_with_running_data(
+        res.gsea, term_rows["term"].astype(str).tolist()
     )
-    _plotly(plots.gsea_running_plot(res.gsea, term),
-            key=f"gsea_running_{res.name}")
+    if running_terms:
+        running_rows = term_rows[term_rows["term"].astype(str).isin(running_terms)]
+        term = st.selectbox(
+            "Term",
+            running_rows["term"].tolist(),
+            format_func=lambda t: _gsea_term_label(
+                running_rows.loc[running_rows["term"].eq(t)].iloc[0]
+            ),
+            key=f"gsea_term_{res.name}",
+        )
+        trimmed = len(term_rows) - len(running_rows)
+        if trimmed > 0:
+            st.caption(
+                f"Running curves are retained for the top "
+                f"{config.GSEA_MAX_RUNNING_PLOT_TERMS} terms to limit memory use."
+            )
+        _plotly(plots.gsea_running_plot(res.gsea, term),
+                key=f"gsea_running_{res.name}")
+    else:
+        term = term_rows.iloc[0]["term"]
+        st.info("Running plot data was not retained for the filtered terms.")
 
     st.markdown("**Leading-edge genes**")
-    selected_raw = res.gsea.raw.results[term]
+    selected_raw = res.gsea.raw.results.get(term, {})
     leading = [
         g for g in str(selected_raw.get("lead_genes", "")).split(";") if g
     ]
@@ -733,7 +809,12 @@ def tab_gsea(res: ContrastResult):
     jac = st.slider("Jaccard edge threshold", 0.05, 0.6, 0.25, 0.05,
                     key=f"gsea_jac_{res.name}")
     net_terms = filtered.head(40)["term"].tolist()
-    term_map = {t: res.gsea.raw.results[t]["lead_genes"].split(";") for t in net_terms}
+    term_map = {}
+    for t in net_terms:
+        payload = res.gsea.raw.results.get(t, {})
+        genes = [g for g in str(payload.get("lead_genes", "")).split(";") if g]
+        if genes:
+            term_map[t] = genes
     scores = dict(zip(table["term"], table["NES"]))
     _plotly(plots.enrichment_network(term_map, scores, jac),
             key=f"gsea_network_{res.name}")
@@ -807,9 +888,13 @@ def tab_export(results: list[ContrastResult], p: dict):
 def main():
     p = sidebar()
     if p["run"]:
+        st.session_state.pop("results", None)
+        st.session_state.pop("params", None)
+        gc.collect()
         with st.spinner("Running enrichment…"):
             st.session_state["results"] = execute(p)
-        st.session_state["params"] = p
+        st.session_state["params"] = _stored_params(p)
+        gc.collect()
 
     results = st.session_state.get("results")
     if not results:
@@ -825,7 +910,7 @@ def main():
         )
         return
 
-    params = st.session_state.get("params", p)
+    params = st.session_state.get("params", _stored_params(p))
     names = [r.name for r in results]
     chosen = st.selectbox("Contrast", names) if len(names) > 1 else names[0]
     res = next(r for r in results if r.name == chosen)

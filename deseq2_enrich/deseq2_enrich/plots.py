@@ -582,9 +582,13 @@ def gsea_bar(gsea_df: pd.DataFrame, top_n: int = 20,
 
 def gsea_running_plot(gsea_result, term: str) -> go.Figure:
     """Classic GSEA running-enrichment plot for one term (3 stacked panels)."""
-    res = gsea_result.raw.results[term]
+    res = gsea_result.raw.results.get(term, {})
+    if "RES" not in res or "hits" not in res:
+        return _empty_fig("Running plot data was not retained for this term")
     RES = np.asarray(res["RES"], dtype=float)
     hits = np.asarray(res["hits"], dtype=int)
+    if len(RES) == 0:
+        return _empty_fig("No running enrichment data for this term")
     ranking = gsea_result.ranking.values
     x = np.arange(len(RES))
 
