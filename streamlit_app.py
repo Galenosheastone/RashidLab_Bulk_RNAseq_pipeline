@@ -360,6 +360,21 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
         key=f"gsea_custom_gmt_{res.name}",
         help="Optional pathway/module file. Terms are combined with selected collections.",
     )
+    slow = [lib for lib in selected_libs if lib in config.GSEA_SLOW_LIBRARIES]
+    if slow:
+        perms = params.get("permutations", config.GSEA_PERMUTATIONS)
+        st.error(
+            f"**{', '.join(config.GSEA_LIBRARIES.get(l, l) for l in slow)}** "
+            "selected. Native chicken GO is ~18,700 terms and scores ~5,900 sets "
+            "on a typical table. Measured peak memory: **~4.2 GB**, against the "
+            "~1 GB limit on Streamlit Community Cloud — the app will most likely "
+            "be killed or thrash rather than finish. Runtime is ~6 min at 1000 "
+            f"permutations even with enough RAM (currently {perms}).\n\n"
+            "Reactome + WikiPathways score 570 sets at ~830 MB in under a minute. "
+            "Run GO locally, or deselect it here.",
+            icon="🛑",
+        )
+
     mode_labels = {
         "auto": "Auto — native chicken where possible (recommended)",
         "native_chicken": "Native chicken only",

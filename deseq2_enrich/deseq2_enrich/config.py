@@ -67,7 +67,17 @@ GSEA_LIBRARIES = {
 # bias, and the sparse-mapping guardrail never fires on the default path.
 # Hallmark and Oncogenic Signatures are human-only and remain selectable;
 # ticking either one adds a second, ortholog-based prerank with its own FDR.
-GSEA_DEFAULT_LIBRARIES = ["Reactome_2022", "GO_Biological_Process_2026"]
+GSEA_DEFAULT_LIBRARIES = ["Reactome_2022", "WikiPathway_2023_Human"]
+
+# Native GO is ~18.7k chicken terms and dominates prerank runtime: measured on
+# a 16.3k-gene table, GO alone scores 5924 sets in ~6 min at 1000 permutations
+# versus ~40 s for Reactome + WikiPathways. It is therefore opt-in rather than
+# a default, and the UI states the cost before you tick it.
+GSEA_SLOW_LIBRARIES = {
+    "GO_Biological_Process_2026",
+    "GO_Molecular_Function_2026",
+    "GO_Cellular_Component_2026",
+}
 GSEA_LIBRARY_GROUPS = {
     "Curated pathways": [
         "MSigDB_Hallmark_2020",
