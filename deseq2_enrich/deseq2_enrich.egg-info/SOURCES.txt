@@ -20,7 +20,10 @@ deseq2_enrich.egg-info/entry_points.txt
 deseq2_enrich.egg-info/requires.txt
 deseq2_enrich.egg-info/top_level.txt
 tests/test_degs.py
+tests/test_genesets.py
+tests/test_gsea.py
 tests/test_io.py
 tests/test_ora_intersections.py
+tests/test_ortho.py
 tests/test_pipeline_mocked.py
 tests/test_rank.py

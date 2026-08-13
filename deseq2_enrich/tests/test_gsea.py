@@ -98,7 +98,12 @@ def test_pval_floored_at_permutation_resolution():
 
 
 def test_run_prerank_real_smoke():
-    """A genuine prerank: guards the gseapy internals the plots depend on."""
+    """A genuine prerank: guards the gseapy internals the plots depend on.
+
+    This is the gate on the ``gseapy<2`` cap. It must pass on the version the
+    deployment actually installs before that cap is touched. Verified on
+    1.1.12 and 1.3.1; run it under the target version before any bump.
+    """
     rng = np.random.default_rng(0)
     genes = [f"G{i:03d}" for i in range(60)]
     scores = pd.Series(rng.normal(size=60), index=genes).sort_values(ascending=False)

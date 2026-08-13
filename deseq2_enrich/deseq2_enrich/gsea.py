@@ -109,6 +109,12 @@ def run_prerank(
 # stay inside a ~1 GB host. Centralised so a gseapy upgrade that renames them
 # is a one-line change -- and so test_run_prerank_real_smoke, which exercises
 # the real object, fails loudly in CI rather than silently in production.
+#
+# Verified against gseapy 1.1.12 and 1.3.1 (2026-08-13): the full suite passes
+# on both, and a real 20k-set chicken prerank returns identical scores
+# (3756 sets, top NES 2.842598) with the running plot and leading-edge heatmap
+# rendering from pre.results afterwards. 1.3.1 is what the deployed
+# requirements.txt resolves to.
 _GSEAPY_HEAVY_ATTRS = ("gene_sets", "gmt", "_gmt", "ranking", "rnk")
 
 
