@@ -123,3 +123,105 @@ def test_gsea_raises_when_ortholog_mapping_is_sparse(tmp_path, toy_deseq2):
     assert "too sparse" in res.errors["gsea"]
     # The rate is recorded even though the run aborted, so the UI can show it.
     assert res.gsea_metadata["mapping_rate"] < config.ORTHO_MIN_MAPPING_RATE
+
+
+# --------------------------------------------------------------------------
+# Native-chicken routing (Task 1.1)
+# --------------------------------------------------------------------------
+_FAKE_CHICKEN_GMT = {
+    "GO | fake chicken process": [f"gene_{i}" for i in range(12)],
+    "REAC | fake chicken pathway": [f"gene_{i}" for i in range(5, 18)],
+}
+
+
+def _fake_prerank_factory():
+    """A prerank stand-in that echoes back whichever terms it was given."""
+    def _fake(rnk, gene_sets, **kwargs):
+        terms = list(gene_sets)
+        pre = MagicMock()
+        pre.res2d = pd.DataFrame({
+            "Term": terms,
+            "ES": [0.4] * len(terms),
+            "NES": [1.5] * len(terms),
+            "NOM p-val": [0.01] * len(terms),
+            "FDR q-val": [0.02] * len(terms),
+            "FWER p-val": [0.01] * len(terms),
+            "Lead_genes": ["gene_1;gene_2"] * len(terms),
+        })
+        pre.results = {
+            t: {"nes": 1.5, "fdr": 0.02, "RES": [0.0, 0.3], "hits": [1],
+                "lead_genes": "gene_1;gene_2"}
+            for t in terms
+        }
+        return pre
+    return _fake
+
+
+def test_native_mode_skips_ortholog_mapping(tmp_path, toy_deseq2):
+    """Native chicken must never touch the orthology endpoint."""
+    csv_path = tmp_path / "toy.tsv"
+    toy_deseq2.to_csv(csv_path, sep="\t", index=False)
+
+    with patch("deseq2_enrich.genesets.fetch_chicken_gmt",
+               return_value=dict(_FAKE_CHICKEN_GMT)) as mock_gmt, \
+         patch("deseq2_enrich.ortho.attach_human_symbol") as mock_ortho, \
+         patch("deseq2_enrich.gsea.gp.prerank", side_effect=_fake_prerank_factory()):
+        res = run_contrast(
+            str(csv_path), contrast_name="toy", do_ora=False,
+            gsea_libraries=["GO_Biological_Process_2026"],
+            gsea_mode="native_chicken", gsea_permutations=10,
+        )
+
+    assert res.errors == {}, res.errors
+    mock_ortho.assert_not_called()
+    assert mock_gmt.call_count == 1
+    assert res.gsea_metadata["gsea_mode"] == "native_chicken"
+    assert res.gsea_metadata["gsea_routes"] == ["native"]
+    # Ranked on chicken symbols, not human orthologs.
+    assert res.gsea_metadata["native_key_col"] in ("gene_name", "gene_id")
+    assert set(res.gsea.table["gsea_route"]) == {"native"}
+
+
+def test_auto_mode_runs_both_routes_with_separate_fdr(tmp_path, toy_deseq2):
+    """GO goes native, Hallmark goes through orthologs, FDR stays per route."""
+    csv_path = tmp_path / "toy.tsv"
+    toy_deseq2.to_csv(csv_path, sep="\t", index=False)
+
+    with patch("deseq2_enrich.genesets.fetch_chicken_gmt",
+               return_value=dict(_FAKE_CHICKEN_GMT)), \
+         patch("deseq2_enrich.ortho._orth_cached", side_effect=_fake_orth_result), \
+         patch("deseq2_enrich.genesets.fetch_library",
+               return_value={"HALLMARK_FAKE": ["HS_G000", "HS_G001"] * 8}), \
+         patch("deseq2_enrich.gsea.gp.prerank", side_effect=_fake_prerank_factory()):
+        res = run_contrast(
+            str(csv_path), contrast_name="toy", do_ora=False,
+            gsea_libraries=["GO_Biological_Process_2026", "MSigDB_Hallmark_2020"],
+            gsea_mode="auto", gsea_permutations=10,
+        )
+
+    assert res.errors == {}, res.errors
+    assert res.gsea_metadata["gsea_routes"] == ["native", "ortholog"]
+    assert res.gsea_metadata["fdr_per_route"] is True
+    routes = set(res.gsea.table["gsea_route"])
+    assert routes == {"native", "ortholog"}
+    # Both routes are retained separately so running plots use the right ranking.
+    assert set(res.gsea.routes) == {"native", "ortholog"}
+    # The ortholog route still reports its mapping rate.
+    assert "ortholog_report" in res.gsea_metadata
+
+
+def test_native_gmt_failure_is_reported_not_swallowed(tmp_path, toy_deseq2):
+    """A dead GMT URL must surface as an error, never as an empty success."""
+    csv_path = tmp_path / "toy.tsv"
+    toy_deseq2.to_csv(csv_path, sep="\t", index=False)
+
+    with patch("deseq2_enrich.genesets.fetch_chicken_gmt",
+               side_effect=RuntimeError("Could not download the native chicken gene sets")):
+        res = run_contrast(
+            str(csv_path), contrast_name="toy", do_ora=False,
+            gsea_libraries=["Reactome_2022"],
+            gsea_mode="native_chicken", gsea_permutations=10,
+        )
+
+    assert res.gsea is None
+    assert "Could not download" in res.errors["gsea"]

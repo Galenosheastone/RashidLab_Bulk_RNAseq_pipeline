@@ -199,6 +199,10 @@ def execute(p: dict) -> list[ContrastResult]:
             ora_directions=p["ora_dirs"], gsea_libraries=p["gsea_libs"],
             custom_gmt=custom, do_ora=p["do_ora"], do_gsea=p["do_gsea"],
             gsea_permutations=p["permutations"],
+            # Chicken-first: native gene sets wherever they exist, orthologs
+            # only for the human-only collections.
+            gsea_mode=p.get("gsea_mode", config.GSEA_DEFAULT_MODE),
+            strict_one_to_one=p.get("strict_one_to_one", True),
         )
         results.append(res)
     prog.progress(1.0, text="Done")
@@ -348,6 +352,37 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
         key=f"gsea_custom_gmt_{res.name}",
         help="Optional pathway/module file. Terms are combined with selected collections.",
     )
+    mode_labels = {
+        "auto": "Auto — native chicken where possible (recommended)",
+        "native_chicken": "Native chicken only",
+        "ortholog": "Human orthologs only (legacy)",
+    }
+    mode = st.radio(
+        "GSEA route",
+        list(mode_labels),
+        format_func=lambda m: mode_labels[m],
+        index=list(mode_labels).index(
+            res.gsea_metadata.get("gsea_mode", config.GSEA_DEFAULT_MODE)
+        ),
+        key=f"gsea_mode_{res.name}",
+        help=(
+            "Native chicken runs GSEA directly on chicken GO/Reactome/WikiPathways "
+            "annotations — no ortholog step, so no genes are dropped for lacking a "
+            "human counterpart. Hallmark and Oncogenic Signatures are human-only "
+            "collections and always use orthologs. KEGG has no downloadable chicken "
+            "gene sets; it remains available in the ORA tab."
+        ),
+    )
+    strict = st.checkbox(
+        "Strict 1:1 orthologs (cleaner, fewer genes)",
+        value=res.gsea_metadata.get("strict_one_to_one", True),
+        key=f"gsea_strict_{res.name}",
+        help=(
+            "Only unambiguous chicken↔human pairs. Prevents one chicken "
+            "measurement appearing as several correlated human paralog ranks. "
+            "Applies to the ortholog route only."
+        ),
+    )
     c1, c2 = st.columns([1, 3])
     with c1:
         update = st.button("Update GSEA", type="primary",
@@ -362,7 +397,9 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
         return
 
     custom_gmt, custom_name = _parse_custom_gmt_upload(custom_gmt_file)
-    if not selected_libs and not custom_gmt:
+    # Native mode falls back to the default chicken sources when nothing
+    # selected maps natively, so it does not need an explicit selection.
+    if not selected_libs and not custom_gmt and mode != "native_chicken":
         st.warning("Select at least one collection or upload a GMT file.")
         return
 
@@ -375,6 +412,8 @@ def _render_gsea_controls(res: ContrastResult, params: dict) -> None:
             custom_gmt=custom_gmt,
             organism=config.ORGANISM,
             gsea_permutations=params.get("permutations", config.GSEA_PERMUTATIONS),
+            gsea_mode=mode,
+            strict_one_to_one=strict,
         )
     gc.collect()
     st.session_state["gsea_libs"] = selected_libs
@@ -765,6 +804,22 @@ def tab_gsea(res: ContrastResult):
     m2.metric("Gene sets tested", f"{len(table):,}")
     m3.metric(f"FDR <= {fdr_cutoff:.2f}", f"{len(sig):,}")
     m4.metric("Significant direction", f"{sig_pos} pos / {sig_neg} neg")
+
+    routes = metadata.get("gsea_routes") or []
+    if "native" in routes:
+        st.caption(
+            "🐔 Native chicken GSEA on "
+            f"{', '.join(metadata.get('native_sources', []))} — no ortholog "
+            f"step, {metadata.get('native_ranking_size', 0):,} chicken genes ranked."
+        )
+    if metadata.get("fdr_per_route"):
+        st.info(
+            "This run used two independent preranks (native chicken and human "
+            "ortholog). **FDR is computed within each route, not pooled** — "
+            "q-values are comparable inside a route, not across the two. The "
+            "`gsea_route` column marks which is which.",
+            icon="ℹ️",
+        )
     _render_ortholog_report(metadata)
 
     selected_labels = [

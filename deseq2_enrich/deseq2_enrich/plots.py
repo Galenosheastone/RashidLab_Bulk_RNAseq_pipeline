@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from . import config
+from . import config, gsea
 
 
 # --------------------------------------------------------------------------
@@ -582,6 +582,9 @@ def gsea_bar(gsea_df: pd.DataFrame, top_n: int = 20,
 
 def gsea_running_plot(gsea_result, term: str) -> go.Figure:
     """Classic GSEA running-enrichment plot for one term (3 stacked panels)."""
+    # In 'auto' mode the term may belong to either the native or the ortholog
+    # prerank; the curve is only valid against its own ranking.
+    gsea_result = gsea.result_for_term(gsea_result, term)
     res = gsea_result.raw.results.get(term, {})
     if "RES" not in res or "hits" not in res:
         return _empty_fig("Running plot data was not retained for this term")
@@ -634,7 +637,11 @@ def leading_edge_heatmap(gsea_result, terms: list[str], max_genes: int = 40) -> 
     gene_union: list[str] = []
     per_term: dict[str, set] = {}
     for term in terms:
-        lead = gsea_result.raw.results[term]["lead_genes"].split(";")
+        owner = gsea.result_for_term(gsea_result, term)
+        payload = owner.raw.results.get(term)
+        if not payload or "lead_genes" not in payload:
+            continue
+        lead = payload["lead_genes"].split(";")
         lead = [g for g in lead if g]
         per_term[term] = set(lead)
         for g in lead:

@@ -49,6 +49,8 @@ def run_contrast(
     do_gsea: bool = True,
     gsea_permutations: int = config.GSEA_PERMUTATIONS,
     strict_one_to_one: bool = False,
+    gsea_mode: str = "ortholog",
+    chicken_gmt_keying: str = config.CHICKEN_GMT_KEYING,
 ) -> ContrastResult:
     df, report = io.load_deseq2(path_or_buffer, contrast_name=contrast_name)
     if report.missing_required:
@@ -84,9 +86,68 @@ def run_contrast(
             organism=organism,
             gsea_permutations=gsea_permutations,
             strict_one_to_one=strict_one_to_one,
+            gsea_mode=gsea_mode,
+            chicken_gmt_keying=chicken_gmt_keying,
         )
 
     return result
+
+
+def _partition_libraries(
+    libraries: list[str], gsea_mode: str
+) -> tuple[set[str], list[str]]:
+    """Split selected collections into (native chicken sources, ortholog libs).
+
+    In ``auto`` a collection goes native whenever chicken annotations exist for
+    it (GO/Reactome/WikiPathways); Hallmark and Oncogenic have no chicken
+    equivalent and keep the ortholog route. KEGG has no native GMT either --
+    g:Profiler does not redistribute it -- so it also falls to orthologs.
+    """
+    if gsea_mode == "ortholog":
+        return set(), list(libraries)
+    if gsea_mode == "native_chicken":
+        native = {
+            config.LIBRARY_NATIVE_SOURCE[lib]
+            for lib in libraries
+            if lib in config.LIBRARY_NATIVE_SOURCE
+        }
+        # Nothing selected that maps natively -> fall back to the defaults so
+        # the user still gets the chicken collections they asked for.
+        return (native or set(config.NATIVE_GSEA_DEFAULT_SOURCES)), []
+
+    native, human_only = set(), []
+    for lib in libraries:
+        source = config.LIBRARY_NATIVE_SOURCE.get(lib)
+        if source is not None:
+            native.add(source)
+        else:
+            human_only.append(lib)
+    return native, human_only
+
+
+def _native_key_column(df: pd.DataFrame, keying: str) -> str:
+    """Pick the dataframe column matching the chicken GMT's ID space.
+
+    ``ensg`` keying needs an Ensembl column; if the export has none we fall
+    back to symbols rather than silently ranking on an ID space the GMT does
+    not use, which would score nothing at all.
+    """
+    if keying == "ensg":
+        if "ensembl_id" in df.columns and df["ensembl_id"].notna().any():
+            return "ensembl_id"
+        if "gene_name" in df.columns and df["gene_name"].notna().any():
+            return "gene_name"
+        raise ValueError(
+            "Native chicken GSEA with Ensembl keying needs an 'ensembl_id' or "
+            "'gene_name' column; this table has neither."
+        )
+    for col in ("gene_name", "gene_id"):
+        if col in df.columns and df[col].notna().any():
+            return col
+    raise ValueError(
+        "Native chicken GSEA with symbol keying needs a 'gene_name' or "
+        "'gene_id' column carrying chicken gene symbols."
+    )
 
 
 def run_gsea_for_result(
@@ -99,6 +160,8 @@ def run_gsea_for_result(
     organism: str = config.ORGANISM,
     gsea_permutations: int = config.GSEA_PERMUTATIONS,
     strict_one_to_one: bool = False,
+    gsea_mode: str = "ortholog",
+    chicken_gmt_keying: str = config.CHICKEN_GMT_KEYING,
 ) -> ContrastResult:
     """Run or rerun only the GSEA stage on an existing contrast result.
 
@@ -113,58 +176,125 @@ def run_gsea_for_result(
     result.gsea_metadata = {}
 
     try:
-        gene_sets = {}
-        libraries = list(gsea_libraries or [])
-        if libraries:
-            gene_sets.update(
-                genesets.combine_libraries(libraries, config.ORTHOLOG_TARGET)
+        if gsea_mode not in config.GSEA_MODES:
+            raise ValueError(
+                f"Unknown gsea_mode {gsea_mode!r}; expected one of {config.GSEA_MODES}"
             )
-        if custom_gmt:
-            gene_sets.update(custom_gmt)
-        if not gene_sets:
+        libraries = list(gsea_libraries or [])
+        native_sources, ortholog_libs = _partition_libraries(libraries, gsea_mode)
+
+        routes: dict[str, gsea.GSEAResult] = {}
+        tables: list[pd.DataFrame] = []
+
+        # --- Native chicken route: no ortholog step, no dropout bias -------
+        if native_sources or (gsea_mode == "native_chicken" and custom_gmt):
+            native_sets = {}
+            if native_sources:
+                native_sets.update(
+                    genesets.fetch_chicken_gmt(
+                        keying=chicken_gmt_keying, sources=tuple(sorted(native_sources))
+                    )
+                )
+            if custom_gmt:
+                native_sets.update(custom_gmt)
+            if native_sets:
+                key_col = _native_key_column(result.df, chicken_gmt_keying)
+                native_rank = rank.build_rank(
+                    result.df, metric=rank_metric, key_col=key_col
+                )
+                routes["native"] = gsea.run_prerank(
+                    native_rank, native_sets,
+                    min_size=config.GSEA_MIN_SIZE, max_size=config.GSEA_MAX_SIZE,
+                    permutations=gsea_permutations, seed=config.GSEA_SEED,
+                )
+                result.gsea_metadata["native_key_col"] = key_col
+                result.gsea_metadata["native_sources"] = sorted(native_sources)
+                result.gsea_metadata["native_ranking_size"] = len(native_rank)
+
+        # --- Ortholog route: human-only collections (Hallmark / Oncogenic) --
+        if ortholog_libs or (gsea_mode == "ortholog" and custom_gmt):
+            ortho_sets = {}
+            if ortholog_libs:
+                ortho_sets.update(
+                    genesets.combine_libraries(ortholog_libs, config.ORTHOLOG_TARGET)
+                )
+            if custom_gmt and gsea_mode == "ortholog":
+                ortho_sets.update(custom_gmt)
+            if ortho_sets:
+                mapped, ortho_report = ortho.attach_human_symbol(
+                    result.df,
+                    id_col=id_col,
+                    source=organism,
+                    strict_one_to_one=strict_one_to_one,
+                )
+                result.gsea_metadata["ortholog_report"] = ortho_report.as_text()
+                result.gsea_metadata["mapping_rate"] = round(
+                    ortho_report.mapping_rate, 3
+                )
+
+                # A pre-ranked GSEA takes the ranked list as its universe. If
+                # most of the chicken genes dropped out, the null is computed
+                # on a biased remnant and the NES/FDR are not interpretable --
+                # fail loudly rather than hand back confident-looking numbers.
+                if (ortho_report.n_query_mapped < config.ORTHO_MIN_MAPPED_GENES
+                        or ortho_report.mapping_rate < config.ORTHO_MIN_MAPPING_RATE):
+                    raise ValueError(
+                        "Ortholog mapping too sparse for reliable GSEA "
+                        f"({ortho_report.as_text()}). "
+                        "Check the ID column (prefer ENSGALG Ensembl IDs), or "
+                        "use native-chicken GSEA for GO/Reactome/WP instead."
+                    )
+
+                ortho_rank = rank.build_rank(
+                    mapped, metric=rank_metric, key_col="human_symbol"
+                )
+                routes["ortholog"] = gsea.run_prerank(
+                    ortho_rank, ortho_sets,
+                    min_size=config.GSEA_MIN_SIZE, max_size=config.GSEA_MAX_SIZE,
+                    permutations=gsea_permutations, seed=config.GSEA_SEED,
+                )
+                result.gsea_metadata["ortholog_ranking_size"] = len(ortho_rank)
+
+        if not routes:
             raise ValueError("No gene sets selected for GSEA.")
 
-        mapped, ortho_report = ortho.attach_human_symbol(
-            result.df,
-            id_col=id_col,
-            source=organism,
-            strict_one_to_one=strict_one_to_one,
-        )
-        result.gsea_metadata["ortholog_report"] = ortho_report.as_text()
-        result.gsea_metadata["mapping_rate"] = round(ortho_report.mapping_rate, 3)
+        # FDR is computed within each prerank and is NOT pooled across routes:
+        # the two runs have different nulls and different gene universes, so a
+        # combined q-value would be meaningless. The route is carried in the
+        # table so the distinction stays visible downstream.
+        for route_name, route_result in routes.items():
+            tbl = route_result.table.copy()
+            tbl["gsea_route"] = route_name
+            tables.append(tbl)
 
-        # A pre-ranked GSEA takes the ranked list as its universe. If most of
-        # the chicken genes dropped out, the null is computed on a biased
-        # remnant and the NES/FDR are not interpretable -- fail loudly rather
-        # than hand back confident-looking numbers.
-        if (ortho_report.n_query_mapped < config.ORTHO_MIN_MAPPED_GENES
-                or ortho_report.mapping_rate < config.ORTHO_MIN_MAPPING_RATE):
-            raise ValueError(
-                "Ortholog mapping too sparse for reliable GSEA "
-                f"({ortho_report.as_text()}). "
-                "Check the ID column (prefer ENSGALG Ensembl IDs), or run "
-                "native-chicken GSEA for GO/KEGG/Reactome/WP instead."
-            )
-
-        ranking = rank.build_rank(mapped, metric=rank_metric, key_col="human_symbol")
-        result.ranking = ranking
-        result.gsea = gsea.run_prerank(
-            ranking, gene_sets,
-            min_size=config.GSEA_MIN_SIZE, max_size=config.GSEA_MAX_SIZE,
-            permutations=gsea_permutations, seed=config.GSEA_SEED,
+        primary = routes.get("native") or routes["ortholog"]
+        result.gsea = gsea.GSEAResult(
+            table=pd.concat(tables, ignore_index=True) if len(tables) > 1
+            else tables[0],
+            raw=primary.raw,
+            ranking=primary.ranking,
+            running_terms=tuple(
+                t for r in routes.values() for t in (r.running_terms or ())
+            ),
+            routes=routes if len(routes) > 1 else {},
         )
+        result.ranking = primary.ranking
+
         # update(), not reassign: the ortholog report was recorded above and
         # must survive into the metadata the UI renders.
         result.gsea_metadata.update({
             "libraries": libraries,
             "custom_gmt_terms": len(custom_gmt or {}),
-            "gene_sets_requested": len(gene_sets),
             "id_col": id_col,
             "rank_metric": rank_metric,
             "organism": organism,
             "permutations": gsea_permutations,
-            "ranking_size": len(ranking),
+            "ranking_size": len(result.ranking),
             "strict_one_to_one": strict_one_to_one,
+            "gsea_mode": gsea_mode,
+            "gsea_routes": sorted(routes),
+            "chicken_gmt_keying": chicken_gmt_keying,
+            "fdr_per_route": len(routes) > 1,
         })
     except (KeyError, ValueError, RuntimeError, AssertionError, TypeError,
             OSError, ConnectionError) as exc:

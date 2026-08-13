@@ -78,6 +78,52 @@ GSEA_LIBRARY_GROUPS = {
     ],
 }
 
+# --- Native-chicken GSEA (g:Profiler GMT) --------------------------------
+# GO/Reactome/WikiPathways all have native chicken annotations, so prerank can
+# be run on them directly -- no ortholog step and none of its dropout bias.
+# Only genuinely human-only collections (Hallmark, Oncogenic) still need it.
+#
+# URLs verified live 2026-08-13: the '_full_' filenames resolve (HTTP 206 on a
+# range request, last modified 2026-03-20). The shorter
+# 'gprofiler_ggallus.<keying>.gmt' names return 404 and must not be used.
+GPROFILER_GMT_URLS = {
+    "name": "https://biit.cs.ut.ee/gprofiler/static/gprofiler_full_ggallus.name.gmt",
+    "ensg": "https://biit.cs.ut.ee/gprofiler/static/gprofiler_full_ggallus.ENSG.gmt",
+}
+# Symbol keying, NOT Ensembl. The GMT ships GRCg7b IDs (ENSGALG000100...) while
+# real exports are still commonly galgal6 (ENSGALG000000...); measured overlap
+# between the two series is 0/5000. Symbols overlap 84% on the same data.
+CHICKEN_GMT_KEYING = "name"
+CHICKEN_GMT_KEYINGS = ("name", "ensg")
+
+# Sources kept from the chicken GMT. HP (human phenotype) and MIRNA are
+# dropped: HP is meaningless for chicken and MIRNA sets are almost all too
+# small to score. KEGG is absent from g:Profiler's downloadable GMTs
+# (licensing) -- it remains available in the ORA tab, which queries the API.
+NATIVE_GSEA_SOURCES = {
+    "GO": "Gene Ontology (chicken)",
+    "REAC": "Reactome (chicken)",
+    "WP": "WikiPathways (chicken)",
+}
+NATIVE_GSEA_DEFAULT_SOURCES = ["GO", "REAC"]
+
+# Enrichr library -> native chicken source, used by 'auto' routing. GO:BP/MF/CC
+# all collapse to "GO": the GMT does not encode the GO namespace in the term
+# ID, so native GO cannot be split into the three branches.
+LIBRARY_NATIVE_SOURCE = {
+    "Reactome_2022": "REAC",
+    "WikiPathway_2023_Human": "WP",
+    "GO_Biological_Process_2026": "GO",
+    "GO_Molecular_Function_2026": "GO",
+    "GO_Cellular_Component_2026": "GO",
+}
+# Human-only concepts with no chicken equivalent; these keep the ortholog route.
+HUMAN_ONLY_LIBRARIES = ("MSigDB_Hallmark_2020", "MSigDB_Oncogenic_Signatures")
+
+GSEA_MODES = ("auto", "native_chicken", "ortholog")
+GSEA_DEFAULT_MODE = "auto"
+CHICKEN_GMT_CACHE_SIZE = 1  # a parsed GMT is large; hold one at a time
+
 # --- GSEA parameters ------------------------------------------------------
 GSEA_MIN_SIZE = 15
 GSEA_MAX_SIZE = 500

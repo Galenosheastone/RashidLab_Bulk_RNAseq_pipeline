@@ -7,7 +7,7 @@ arrays for lower-priority terms so broad GO libraries do not dominate memory.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,24 @@ class GSEAResult:
     raw: object                  # gseapy Prerank object (for running plots)
     ranking: pd.Series           # the ranked list actually used
     running_terms: tuple[str, ...] = ()
+    # 'auto' mode runs two independent preranks (native chicken + human
+    # ortholog) whose rankings live in different ID spaces and have different
+    # lengths. They are kept separate here rather than pooled, because a
+    # running curve is only meaningful against the ranking it was computed
+    # from -- and because FDR must not be pooled across two nulls.
+    routes: dict[str, "GSEAResult"] = field(default_factory=dict)
+
+
+def result_for_term(result: GSEAResult, term: str) -> GSEAResult:
+    """Return the per-route result that actually scored ``term``.
+
+    Single-route runs return themselves, so callers need no special case.
+    """
+    for route in (result.routes or {}).values():
+        raw_results = getattr(getattr(route, "raw", None), "results", {}) or {}
+        if term in raw_results:
+            return route
+    return result
 
 
 def run_prerank(
