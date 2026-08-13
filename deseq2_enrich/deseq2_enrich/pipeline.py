@@ -116,7 +116,9 @@ def run_gsea_for_result(
         if not gene_sets:
             raise ValueError("No gene sets selected for GSEA.")
 
-        mapped = ortho.attach_human_symbol(result.df, id_col=id_col, source=organism)
+        mapped, _ortho_report = ortho.attach_human_symbol(
+            result.df, id_col=id_col, source=organism
+        )
         ranking = rank.build_rank(mapped, metric=rank_metric, key_col="human_symbol")
         result.ranking = ranking
         result.gsea = gsea.run_prerank(

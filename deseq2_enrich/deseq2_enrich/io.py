@@ -69,7 +69,18 @@ def _build_rename_map(columns: list[str]) -> dict[str, str]:
             if alias in lower:
                 rename[lower[alias]] = canonical
                 break
-    return rename
+
+    # If two observed columns would rename to the same canonical, keep the
+    # first. pandas would otherwise happily produce two columns with the same
+    # name, and every downstream ``df["gene_id"]`` would return a DataFrame.
+    seen_targets: set[str] = set()
+    deduped: dict[str, str] = {}
+    for obs, canon in rename.items():
+        if canon in seen_targets:
+            continue
+        seen_targets.add(canon)
+        deduped[obs] = canon
+    return deduped
 
 
 def load_deseq2(
@@ -138,6 +149,8 @@ def load_deseq2(
         )
         df.loc[df["entrez_id"].isin(["nan", "<NA>", ""]), "entrez_id"] = pd.NA
     df["gene_id"] = df["gene_id"].astype("string")
+    if "ensembl_id" in df.columns:
+        df["ensembl_id"] = df["ensembl_id"].astype("string")
 
     if contrast_name:
         df["contrast"] = contrast_name
@@ -147,7 +160,7 @@ def load_deseq2(
     # --- Reporting ---
     report.n_rows = len(df)
     report.n_unique_gene_id = int(df["gene_id"].nunique())
-    for id_col in ("gene_id", "entrez_id", "gene_name"):
+    for id_col in ("gene_id", "ensembl_id", "entrez_id", "gene_name"):
         if id_col in df.columns:
             report.coverage[id_col] = int(df[id_col].notna().sum())
     if "gene_biotype" in df.columns:

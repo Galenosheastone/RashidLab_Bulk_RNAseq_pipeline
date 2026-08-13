@@ -12,6 +12,20 @@ from __future__ import annotations
 ORGANISM = "ggallus"
 ORTHOLOG_TARGET = "hsapiens"  # GSEA is run against human MSigDB via orthologs
 
+# --- Orthology ------------------------------------------------------------
+# Which identifier column to hand the orthology endpoint, best first. Stable
+# Ensembl IDs (ENSGALG...) map far more completely and less ambiguously than
+# chicken symbols, which are frequently LOC*/unannotated or clash with human
+# symbols by coincidence. The mapper tries these in order and keeps whichever
+# yields the most human symbols.
+ORTHO_ID_PRIORITY = ["ensembl_id", "gene_id", "gene_name"]
+
+# Guardrails: below either floor the ranked list is too small/biased for the
+# pre-ranked GSEA null to mean anything, so the pipeline raises instead of
+# silently reporting enrichment computed on a handful of genes.
+ORTHO_MIN_MAPPING_RATE = 0.30   # fraction of queried IDs that gain a human ortholog
+ORTHO_MIN_MAPPED_GENES = 200    # absolute floor on mapped source IDs
+
 # --- DEG selection defaults ----------------------------------------------
 PADJ_THRESHOLD = 0.05
 LFC_THRESHOLD = 0.0
@@ -88,6 +102,10 @@ CONTINUOUS_SCALE = "RdBu_r"  # for NES / signed statistics
 # The loader tries to normalise to these canonical names.
 CANONICAL_COLUMNS = {
     "gene_id": ["gene_id", "ensembl", "ensembl_id", "gene", "geneid", "id", "row"],
+    # A *separate* Ensembl column (common in tximport/biomaRt exports where
+    # gene_id already holds a symbol). Deliberately does not share aliases with
+    # gene_id so the two canonicals can never claim the same observed column.
+    "ensembl_id": ["ensembl_gene_id", "ensembl_gene", "ensemblid", "ensgene", "ensg"],
     "entrez_id": ["entrez_id", "entrez", "entrezid", "ncbi_id"],
     "gene_name": ["gene_name", "symbol", "gene_symbol", "name", "external_gene_name"],
     "gene_biotype": ["gene_biotype", "biotype"],
